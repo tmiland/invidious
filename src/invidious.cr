@@ -90,9 +90,9 @@ REDDIT_URL      = URI.parse("https://www.reddit.com")
 LOGIN_URL       = URI.parse("https://accounts.google.com")
 PUBSUB_URL      = URI.parse("https://pubsubhubbub.appspot.com")
 TEXTCAPTCHA_URL = URI.parse("http://textcaptcha.com/omarroth@hotmail.com.json")
+CURRENT_BRANCH  = `git branch | sed -n '/\* /s///p'`.strip
 CURRENT_COMMIT  = `git rev-list HEAD --max-count=1 --abbrev-commit`.strip
-CURRENT_VERSION = `git describe --tags $(git rev-list --tags --max-count=1)`.strip
-CURRENT_BRANCH = `git status | head -1`.strip
+CURRENT_VERSION = `git describe --tags --abbrev=0`.strip
 
 LOCALES = {
   "ar"    => load_locale("ar"),
@@ -136,7 +136,7 @@ if config.statistics_enabled
         "software" => {
           "name"    => "invidious",
           "version" => "#{CURRENT_VERSION}-#{CURRENT_COMMIT}",
-          "branch" => "#{CURRENT_BRANCH}",
+          "branch"  => "#{CURRENT_BRANCH}",
         },
         "openRegistrations" => config.registration_enabled,
         "usage"             => {
@@ -264,7 +264,7 @@ get "/" do |env|
   if user
     user = user.as(User)
     if user.preferences.redirect_feed
-      env.redirect "/feed/subscriptions"
+      next env.redirect "/feed/subscriptions"
     end
   end
 
@@ -417,7 +417,7 @@ get "/watch" do |env|
   video.description = replace_links(video.description)
   description = video.short_description
 
-  host_url = make_host_url(Kemal.config.ssl || config.https_only, config.domain)
+  host_url = make_host_url(config, Kemal.config)
   host_params = env.request.query_params
   host_params.delete_all("v")
 
@@ -517,7 +517,7 @@ get "/embed/:id" do |env|
   video.description = replace_links(video.description)
   description = video.short_description
 
-  host_url = make_host_url(Kemal.config.ssl || config.https_only, config.domain)
+  host_url = make_host_url(config, Kemal.config)
   host_params = env.request.query_params
   host_params.delete_all("v")
 
@@ -603,7 +603,7 @@ get "/opensearch.xml" do |env|
   locale = LOCALES[env.get("locale").as(String)]?
   env.response.content_type = "application/opensearchdescription+xml"
 
-  host = make_host_url(Kemal.config.ssl || config.https_only, config.domain)
+  host = make_host_url(config, Kemal.config)
 
   XML.build(indent: "  ", encoding: "UTF-8") do |xml|
     xml.element("OpenSearchDescription", xmlns: "http://a9.com/-/spec/opensearch/1.1/") do
@@ -1500,7 +1500,7 @@ get "/subscription_manager" do |env|
   subscriptions.sort_by! { |channel| channel.author.downcase }
 
   if action_takeout
-    host_url = make_host_url(Kemal.config.ssl || config.https_only, config.domain)
+    host_url = make_host_url(config, Kemal.config)
 
     if format == "json"
       env.response.content_type = "application/json"
@@ -1583,14 +1583,7 @@ post "/data_control" do |env|
           user.subscriptions += body["subscriptions"].as_a.map { |a| a.as_s }
           user.subscriptions.uniq!
 
-          user.subscriptions.select! do |ucid|
-            begin
-              get_channel(ucid, PG_DB, false, false)
-              true
-            rescue ex
-              false
-            end
-          end
+          user.subscriptions = get_batch_channels(user.subscriptions, PG_DB, false, false)
 
           PG_DB.exec("UPDATE users SET subscriptions = $1 WHERE email = $2", user.subscriptions, user.email)
         end
@@ -1887,6 +1880,7 @@ get "/feed/subscriptions" do |env|
     user = user.as(User)
     sid = sid.as(String)
     preferences = user.preferences
+    token = user.token
 
     if preferences.unseen_only
       env.set "show_watched", true
@@ -1964,7 +1958,7 @@ get "/feed/subscriptions" do |env|
           # Show latest video from each channel
 
           videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM #{view_name} \
-          ORDER BY ucid, published", as: ChannelVideo)
+          ORDER BY ucid, published DESC", as: ChannelVideo)
         end
 
         videos.sort_by! { |video| video.published }.reverse!
@@ -2057,7 +2051,8 @@ end
 get "/feed/channel/:ucid" do |env|
   locale = LOCALES[env.get("locale").as(String)]?
 
-  env.response.content_type = "text/xml"
+  env.response.content_type = "application/atom+xml"
+
   ucid = env.params.url["ucid"]
 
   begin
@@ -2077,8 +2072,8 @@ get "/feed/channel/:ucid" do |env|
     video_id = entry.xpath_node("videoid").not_nil!.content
     title = entry.xpath_node("title").not_nil!.content
 
-    published = Time.parse(entry.xpath_node("published").not_nil!.content, "%FT%X%z", Time::Location.local)
-    updated = Time.parse(entry.xpath_node("updated").not_nil!.content, "%FT%X%z", Time::Location.local)
+    published = Time.parse_rfc3339(entry.xpath_node("published").not_nil!.content)
+    updated = Time.parse_rfc3339(entry.xpath_node("updated").not_nil!.content)
 
     author = entry.xpath_node("author/name").not_nil!.content
     ucid = entry.xpath_node("channelid").not_nil!.content
@@ -2101,7 +2096,7 @@ get "/feed/channel/:ucid" do |env|
     )
   end
 
-  host_url = make_host_url(Kemal.config.ssl || config.https_only, config.domain)
+  host_url = make_host_url(config, Kemal.config)
   path = env.request.path
 
   feed = XML.build(indent: "  ", encoding: "UTF-8") do |xml|
@@ -2168,6 +2163,8 @@ end
 get "/feed/private" do |env|
   locale = LOCALES[env.get("locale").as(String)]?
 
+  env.response.content_type = "application/atom+xml"
+
   token = env.params.query["token"]?
 
   if !token
@@ -2210,7 +2207,7 @@ get "/feed/private" do |env|
 
   if latest_only
     videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM #{view_name} \
-    ORDER BY ucid, published", as: ChannelVideo)
+    ORDER BY ucid, published DESC", as: ChannelVideo)
 
     videos.sort_by! { |video| video.published }.reverse!
   else
@@ -2235,7 +2232,7 @@ get "/feed/private" do |env|
     videos = videos[0..max_results]
   end
 
-  host_url = make_host_url(Kemal.config.ssl || config.https_only, config.domain)
+  host_url = make_host_url(config, Kemal.config)
   path = env.request.path
   query = env.request.query.not_nil!
 
@@ -2281,16 +2278,17 @@ get "/feed/private" do |env|
     end
   end
 
-  env.response.content_type = "application/atom+xml"
   feed
 end
 
 get "/feed/playlist/:plid" do |env|
   locale = LOCALES[env.get("locale").as(String)]?
 
+  env.response.content_type = "application/atom+xml"
+
   plid = env.params.url["plid"]
 
-  host_url = make_host_url(Kemal.config.ssl || config.https_only, config.domain)
+  host_url = make_host_url(config, Kemal.config)
   path = env.request.path
 
   client = make_client(YT_URL)
@@ -2315,11 +2313,10 @@ get "/feed/playlist/:plid" do |env|
     document = document.gsub(match[0], "<uri>#{content}</uri>")
   end
 
-  env.response.content_type = "text/xml"
   document
 end
 
-# Add support for subscribing to channels via PubSubHubbub
+# Support push notifications via PubSubHubbub
 
 get "/feed/webhook/:token" do |env|
   verify_token = env.params.url["token"]
@@ -2327,15 +2324,20 @@ get "/feed/webhook/:token" do |env|
   mode = env.params.query["hub.mode"]
   topic = env.params.query["hub.topic"]
   challenge = env.params.query["hub.challenge"]
-  lease_seconds = env.params.query["hub.lease_seconds"]
 
-  time, signature = verify_token.split(":")
+  if verify_token.starts_with? "v1"
+    _, time, nonce, signature = verify_token.split(":")
+    data = "#{time}:#{nonce}"
+  else
+    time, signature = verify_token.split(":")
+    data = "#{time}"
+  end
 
   if Time.now.to_unix - time.to_i > 600
     halt env, status_code: 400
   end
 
-  if OpenSSL::HMAC.hexdigest(:sha1, HMAC_KEY, time) != signature
+  if OpenSSL::HMAC.hexdigest(:sha1, HMAC_KEY, data) != signature
     halt env, status_code: 400
   end
 
@@ -2346,29 +2348,35 @@ get "/feed/webhook/:token" do |env|
 end
 
 post "/feed/webhook/:token" do |env|
+  token = env.params.url["token"]
   body = env.request.body.not_nil!.gets_to_end
   signature = env.request.headers["X-Hub-Signature"].lchop("sha1=")
 
   if signature != OpenSSL::HMAC.hexdigest(:sha1, HMAC_KEY, body)
+    logger.write("#{token} : Invalid signature")
     halt env, status_code: 200
   end
 
-  rss = XML.parse_html(body)
-  rss.xpath_nodes("//feed/entry").each do |entry|
-    id = entry.xpath_node("videoid").not_nil!.content
+  spawn do
+    rss = XML.parse_html(body)
+    rss.xpath_nodes("//feed/entry").each do |entry|
+      id = entry.xpath_node("videoid").not_nil!.content
+      published = Time.parse_rfc3339(entry.xpath_node("updated").not_nil!.content)
+      updated = Time.parse_rfc3339(entry.xpath_node("updated").not_nil!.content)
 
-    video = get_video(id, PG_DB, proxies)
-    video = ChannelVideo.new(id, video.title, video.published, Time.now, video.ucid, video.author, video.length_seconds)
+      video = get_video(id, PG_DB, proxies, region: nil)
+      video = ChannelVideo.new(id, video.title, published, updated, video.ucid, video.author, video.length_seconds)
 
-    PG_DB.exec("UPDATE users SET notifications = notifications || $1 \
+      PG_DB.exec("UPDATE users SET notifications = notifications || $1 \
       WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications)", video.id, video.published, video.ucid)
 
-    video_array = video.to_a
-    args = arg_array(video_array)
+      video_array = video.to_a
+      args = arg_array(video_array)
 
-    PG_DB.exec("INSERT INTO channel_videos VALUES (#{args}) \
-    ON CONFLICT (id) DO UPDATE SET title = $2, published = $3, \
-    updated = $4, ucid = $5, author = $6, length_seconds = $7", video_array)
+      PG_DB.exec("INSERT INTO channel_videos VALUES (#{args}) \
+      ON CONFLICT (id) DO UPDATE SET title = $2, published = $3, \
+      updated = $4, ucid = $5, author = $6, length_seconds = $7", video_array)
+    end
   end
 
   halt env, status_code: 200
@@ -2524,13 +2532,13 @@ end
 get "/api/v1/stats" do |env|
   env.response.content_type = "application/json"
 
-  if statistics["error"]?
-    halt env, status_code: 500, response: statistics.to_json
-  end
-
   if !config.statistics_enabled
     error_message = {"error" => "Statistics are not enabled."}.to_json
     halt env, status_code: 400, response: error_message
+  end
+
+  if statistics["error"]?
+    halt env, status_code: 500, response: statistics.to_json
   end
 
   if env.params.query["pretty"]? && env.params.query["pretty"] == "1"
@@ -2885,7 +2893,7 @@ get "/api/v1/videos/:id" do |env|
       end
 
       if video.player_response["streamingData"]?.try &.["hlsManifestUrl"]?
-        host_url = make_host_url(Kemal.config.ssl || config.https_only, config.domain)
+        host_url = make_host_url(config, Kemal.config)
 
         host_params = env.request.query_params
         host_params.delete_all("v")
@@ -4079,7 +4087,7 @@ get "/api/manifest/hls_variant/*" do |env|
   env.response.content_type = "application/x-mpegURL"
   env.response.headers.add("Access-Control-Allow-Origin", "*")
 
-  host_url = make_host_url(Kemal.config.ssl || config.https_only, config.domain)
+  host_url = make_host_url(config, Kemal.config)
 
   manifest = manifest.body
   manifest.gsub("https://www.youtube.com", host_url)
@@ -4093,7 +4101,7 @@ get "/api/manifest/hls_playlist/*" do |env|
     halt env, status_code: manifest.status_code
   end
 
-  host_url = make_host_url(Kemal.config.ssl || config.https_only, config.domain)
+  host_url = make_host_url(config, Kemal.config)
 
   manifest = manifest.body.gsub("https://www.youtube.com", host_url)
   manifest = manifest.gsub(/https:\/\/r\d---.{11}\.c\.youtube\.com/, host_url)
