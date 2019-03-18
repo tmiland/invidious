@@ -29,6 +29,11 @@ function update_value(element) {
             </div>
 
             <div class="pure-control-group">
+                <label for="local"><%= translate(locale, "Proxy videos? ") %></label>
+                <input name="local" id="local" type="checkbox" <% if preferences.local %>checked<% end %>>
+            </div>
+
+            <div class="pure-control-group">
                 <label for="listen"><%= translate(locale, "Listen by default: ") %></label>
                 <input name="listen" id="listen" type="checkbox" <% if preferences.listen %>checked<% end %>>
             </div>
@@ -36,7 +41,7 @@ function update_value(element) {
             <div class="pure-control-group">
                 <label for="speed"><%= translate(locale, "Default speed: ") %></label>
                 <select name="speed" id="speed">
-                <% {2.0, 1.5, 1.0, 0.5}.each do |option| %>
+                <% {2.0, 1.5, 1.25, 1.0, 0.75, 0.5}.each do |option| %>
                     <option <% if preferences.speed == option %> selected <% end %>><%= option %></option>
                 <% end %>
                 </select>
