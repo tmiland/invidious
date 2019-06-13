@@ -1,86 +1,139 @@
-class Config
-  YAML.mapping({
-    video_threads:   Int32,      # Number of threads to use for updating videos in cache (mostly non-functional)
-    crawl_threads:   Int32,      # Number of threads to use for finding new videos from YouTube (used to populate "top" page)
-    channel_threads: Int32,      # Number of threads to use for crawling videos from channels (for updating subscriptions)
-    feed_threads:    Int32,      # Number of threads to use for updating feeds
-    db:              NamedTuple( # Database configuration
-user: String,
-      password: String,
-      host: String,
-      port: Int32,
-      dbname: String,
-    ),
-    full_refresh:         Bool,                         # Used for crawling channels: threads should check all videos uploaded by a channel
-    https_only:           Bool?,                        # Used to tell Invidious it is behind a proxy, so links to resources should be https://
-    hmac_key:             String?,                      # HMAC signing key for CSRF tokens and verifying pubsub subscriptions
-    domain:               String?,                      # Domain to be used for links to resources on the site where an absolute URL is required
-    use_pubsub_feeds:     {type: Bool, default: false}, # Subscribe to channels using PubSubHubbub (requires domain, hmac_key)
-    default_home:         {type: String, default: "Top"},
-    feed_menu:            {type: Array(String), default: ["Popular", "Top", "Trending", "Subscriptions"]},
-    top_enabled:          {type: Bool, default: true},
-    captcha_enabled:      {type: Bool, default: true},
-    login_enabled:        {type: Bool, default: true},
-    registration_enabled: {type: Bool, default: true},
-    statistics_enabled:   {type: Bool, default: false},
-    admins:               {type: Array(String), default: [] of String},
-    external_port:        {type: Int32 | Nil, default: nil},
+require "./macros"
+
+struct Nonce
+  db_mapping({
+    nonce:  String,
+    expire: Time,
   })
 end
 
-class FilteredCompressHandler < Kemal::Handler
-  exclude ["/videoplayback", "/videoplayback/*", "/vi/*", "/api/*", "/ggpht/*"]
+struct SessionId
+  db_mapping({
+    id:     String,
+    email:  String,
+    issued: String,
+  })
+end
 
-  def call(env)
-    return call_next env if exclude_match? env
+struct Annotation
+  db_mapping({
+    id:          String,
+    annotations: String,
+  })
+end
 
-    {% if flag?(:without_zlib) %}
-      call_next env
-    {% else %}
-      request_headers = env.request.headers
+struct ConfigPreferences
+  module StringToArray
+    def self.to_yaml(value : Array(String), yaml : YAML::Nodes::Builder)
+      yaml.sequence do
+        value.each do |element|
+          yaml.scalar element
+        end
+      end
+    end
 
-      if request_headers.includes_word?("Accept-Encoding", "gzip")
-        env.response.headers["Content-Encoding"] = "gzip"
-        env.response.output = Gzip::Writer.new(env.response.output, sync_close: true)
-      elsif request_headers.includes_word?("Accept-Encoding", "deflate")
-        env.response.headers["Content-Encoding"] = "deflate"
-        env.response.output = Flate::Writer.new(env.response.output, sync_close: true)
+    def self.from_yaml(ctx : YAML::ParseContext, node : YAML::Nodes::Node) : Array(String)
+      begin
+        unless node.is_a?(YAML::Nodes::Sequence)
+          node.raise "Expected sequence, not #{node.class}"
+        end
+
+        result = [] of String
+        node.nodes.each do |item|
+          unless item.is_a?(YAML::Nodes::Scalar)
+            node.raise "Expected scalar, not #{item.class}"
+          end
+
+          result << item.value
+        end
+      rescue ex
+        if node.is_a?(YAML::Nodes::Scalar)
+          result = [node.value, ""]
+        else
+          result = ["", ""]
+        end
       end
 
-      call_next env
-    {% end %}
+      result
+    end
   end
+
+  yaml_mapping({
+    annotations:            {type: Bool, default: false},
+    annotations_subscribed: {type: Bool, default: false},
+    autoplay:               {type: Bool, default: false},
+    captions:               {type: Array(String), default: ["", "", ""], converter: StringToArray},
+    comments:               {type: Array(String), default: ["youtube", ""], converter: StringToArray},
+    continue:               {type: Bool, default: false},
+    continue_autoplay:      {type: Bool, default: true},
+    dark_mode:              {type: Bool, default: false},
+    latest_only:            {type: Bool, default: false},
+    listen:                 {type: Bool, default: false},
+    local:                  {type: Bool, default: false},
+    locale:                 {type: String, default: "en-US"},
+    max_results:            {type: Int32, default: 40},
+    notifications_only:     {type: Bool, default: false},
+    quality:                {type: String, default: "hd720"},
+    redirect_feed:          {type: Bool, default: false},
+    related_videos:         {type: Bool, default: true},
+    sort:                   {type: String, default: "published"},
+    speed:                  {type: Float32, default: 1.0_f32},
+    thin_mode:              {type: Bool, default: false},
+    unseen_only:            {type: Bool, default: false},
+    video_loop:             {type: Bool, default: false},
+    volume:                 {type: Int32, default: 100},
+  })
 end
 
-class APIHandler < Kemal::Handler
-  only ["/api/v1/*"]
+struct Config
+  module ConfigPreferencesConverter
+    def self.from_yaml(ctx : YAML::ParseContext, node : YAML::Nodes::Node) : Preferences
+      Preferences.new(*ConfigPreferences.new(ctx, node).to_tuple)
+    end
 
-  def call(env)
-    return call_next env unless only_match? env
-
-    env.response.headers["Access-Control-Allow-Origin"] = "*"
-
-    call_next env
+    def self.to_yaml(value : Preferences, yaml : YAML::Nodes::Builder)
+      value.to_yaml(yaml)
+    end
   end
+
+  YAML.mapping({
+    channel_threads:          Int32,                                # Number of threads to use for crawling videos from channels (for updating subscriptions)
+    feed_threads:             Int32,                                # Number of threads to use for updating feeds
+    db:                       DBConfig,                             # Database configuration
+    full_refresh:             Bool,                                 # Used for crawling channels: threads should check all videos uploaded by a channel
+    https_only:               Bool?,                                # Used to tell Invidious it is behind a proxy, so links to resources should be https://
+    hmac_key:                 String?,                              # HMAC signing key for CSRF tokens and verifying pubsub subscriptions
+    domain:                   String?,                              # Domain to be used for links to resources on the site where an absolute URL is required
+    use_pubsub_feeds:         {type: Bool | Int32, default: false}, # Subscribe to channels using PubSubHubbub (requires domain, hmac_key)
+    default_home:             {type: String, default: "Top"},
+    feed_menu:                {type: Array(String), default: ["Popular", "Top", "Trending", "Subscriptions"]},
+    top_enabled:              {type: Bool, default: true},
+    captcha_enabled:          {type: Bool, default: true},
+    login_enabled:            {type: Bool, default: true},
+    registration_enabled:     {type: Bool, default: true},
+    statistics_enabled:       {type: Bool, default: false},
+    admins:                   {type: Array(String), default: [] of String},
+    external_port:            {type: Int32?, default: nil},
+    default_user_preferences: {type: Preferences,
+                               default: Preferences.new(*ConfigPreferences.from_yaml("").to_tuple),
+                               converter: ConfigPreferencesConverter,
+    },
+    dmca_content:      {type: Array(String), default: [] of String}, # For compliance with DMCA, disables download widget using list of video IDs
+    check_tables:      {type: Bool, default: false},                 # Check table integrity, automatically try to add any missing columns, create tables, etc.
+    cache_annotations: {type: Bool, default: false},                 # Cache annotations requested from IA, will not cache empty annotations or annotations that only contain cards
+    banner:            {type: String?, default: nil},                # Optional banner to be displayed along top of page for announcements, etc.
+    hsts:              {type: Bool?, default: true},                 # Enables 'Strict-Transport-Security'. Ensure that `domain` and all subdomains are served securely
+  })
 end
 
-class DenyFrame < Kemal::Handler
-  exclude ["/embed/*"]
-
-  def call(env)
-    return call_next env if exclude_match? env
-
-    env.response.headers["X-Frame-Options"] = "sameorigin"
-    call_next env
-  end
-end
-
-# Temp fix for https://github.com/crystal-lang/crystal/issues/7383
-class HTTP::Client
-  private def handle_response(response)
-    # close unless response.keep_alive?
-    response
-  end
+struct DBConfig
+  yaml_mapping({
+    user:     String,
+    password: String,
+    host:     String,
+    port:     Int32,
+    dbname:   String,
+  })
 end
 
 def rank_videos(db, n)
@@ -93,7 +146,7 @@ def rank_videos(db, n)
       published = rs.read(Time)
 
       # Exponential decay, older videos tend to rank lower
-      temperature = wilson_score * Math.exp(-0.000005*((Time.now - published).total_minutes))
+      temperature = wilson_score * Math.exp(-0.000005*((Time.utc - published).total_minutes))
       top << {temperature, id}
     end
   end
@@ -107,44 +160,47 @@ def rank_videos(db, n)
   return top[0..n - 1]
 end
 
-def login_req(login_form, f_req)
+def login_req(f_req)
   data = {
-    "pstMsg"          => "1",
-    "checkConnection" => "youtube",
-    "checkedDomains"  => "youtube",
-    "hl"              => "en",
-    "deviceinfo"      => %q([null,null,null,[],null,"US",null,null,[],"GlifWebSignIn",null,[null,null,[]]]),
-    "f.req"           => f_req,
+    # "azt"             => "",
+    # "bgHash"          => "",
+
+    # Unfortunately there's not much information available on `bgRequest`; part of Google's BotGuard
+    # Generally this is much longer (>1250 characters), similar to Amazon's `metaData1`
+    # (see https://github.com/omarroth/audible.cr/blob/master/src/audible/crypto.cr#L43).
+    # For now this can be empty.
+    "bgRequest"       => %|["identifier","!AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"]|,
     "flowName"        => "GlifWebSignIn",
     "flowEntry"       => "ServiceLogin",
-  }
+    "continue"        => "https://accounts.google.com/ManageAccount",
+    "f.req"           => f_req,
+    "cookiesDisabled" => "false",
+    "deviceinfo"      => %([null,null,null,[],null,"US",null,null,[],"GlifWebSignIn",null,[null,null,[],null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,[],null,null,null,[],[]]]),
+    "gmscoreversion"  => "undefined",
+    "checkConnection" => "youtube:303:1",
+    "checkedDomains"  => "youtube",
+    "pstMsg"          => "1",
 
-  data = login_form.merge(data)
+  }
 
   return HTTP::Params.encode(data)
 end
 
-def html_to_content(description_html)
-  if !description_html
-    description = ""
-    description_html = ""
-  else
-    description_html = description_html.to_s
-    description = description_html.gsub("<br>", "\n")
-    description = description.gsub("<br/>", "\n")
+def html_to_content(description_html : String)
+  description = description_html.gsub(/(<br>)|(<br\/>)/, {
+    "<br>":  "\n",
+    "<br/>": "\n",
+  })
 
-    if description.empty?
-      description = ""
-    else
-      description = XML.parse_html(description).content.strip("\n ")
-    end
+  if !description.empty?
+    description = XML.parse_html(description).content.strip("\n ")
   end
 
-  return description_html, description
+  return description
 end
 
-def extract_videos(nodeset, ucid = nil)
-  videos = extract_items(nodeset, ucid)
+def extract_videos(nodeset, ucid = nil, author_name = nil)
+  videos = extract_items(nodeset, ucid, author_name)
   videos.select! { |item| !item.is_a?(SearchChannel | SearchPlaylist) }
   videos.map { |video| video.as(SearchVideo) }
 end
@@ -177,8 +233,7 @@ def extract_items(nodeset, ucid = nil, author_name = nil)
     author ||= ""
     author_id ||= ""
 
-    description_html = node.xpath_node(%q(.//div[contains(@class, "yt-lockup-description")]))
-    description_html, description = html_to_content(description_html)
+    description_html = node.xpath_node(%q(.//div[contains(@class, "yt-lockup-description")])).try &.to_s || ""
 
     tile = node.xpath_node(%q(.//div[contains(@class, "yt-lockup-tile")]))
     if !tile
@@ -205,7 +260,7 @@ def extract_items(nodeset, ucid = nil, author_name = nil)
           video_count = video_count.rchop("+")
         end
 
-        video_count = video_count.to_i?
+        video_count = video_count.gsub(/\D/, "").to_i?
       end
       video_count ||= 0
 
@@ -257,12 +312,18 @@ def extract_items(nodeset, ucid = nil, author_name = nil)
 
       author_thumbnail = node.xpath_node(%q(.//div/span/img)).try &.["data-thumb"]?
       author_thumbnail ||= node.xpath_node(%q(.//div/span/img)).try &.["src"]
+      if author_thumbnail
+        author_thumbnail = URI.parse(author_thumbnail)
+        author_thumbnail.scheme = "https"
+        author_thumbnail = author_thumbnail.to_s
+      end
+
       author_thumbnail ||= ""
 
-      subscriber_count = node.xpath_node(%q(.//span[contains(@class, "yt-subscriber-count")])).try &.["title"].delete(",").to_i?
+      subscriber_count = node.xpath_node(%q(.//span[contains(@class, "yt-subscriber-count")])).try &.["title"].gsub(/\D/, "").to_i?
       subscriber_count ||= 0
 
-      video_count = node.xpath_node(%q(.//ul[@class="yt-lockup-meta-info"]/li)).try &.content.split(" ")[0].delete(",").to_i?
+      video_count = node.xpath_node(%q(.//ul[@class="yt-lockup-meta-info"]/li)).try &.content.split(" ")[0].gsub(/\D/, "").to_i?
       video_count ||= 0
 
       items << SearchChannel.new(
@@ -271,7 +332,6 @@ def extract_items(nodeset, ucid = nil, author_name = nil)
         author_thumbnail: author_thumbnail,
         subscriber_count: subscriber_count,
         video_count: video_count,
-        description: description,
         description_html: description_html
       )
     else
@@ -287,7 +347,7 @@ def extract_items(nodeset, ucid = nil, author_name = nil)
         published ||= Time.unix(metadata[0].xpath_node(%q(.//span)).not_nil!["data-timestamp"].to_i64)
       rescue ex
       end
-      published ||= Time.now
+      published ||= Time.utc
 
       begin
         view_count = metadata[0].content.rchop(" watching").delete(",").try &.to_i64?
@@ -325,6 +385,11 @@ def extract_items(nodeset, ucid = nil, author_name = nil)
         paid = true
       end
 
+      premiere_timestamp = node.xpath_node(%q(.//ul[@class="yt-lockup-meta-info"]/li/span[@class="localized-date"])).try &.["data-timestamp"]?.try &.to_i64
+      if premiere_timestamp
+        premiere_timestamp = Time.unix(premiere_timestamp)
+      end
+
       items << SearchVideo.new(
         title: title,
         id: id,
@@ -332,12 +397,12 @@ def extract_items(nodeset, ucid = nil, author_name = nil)
         ucid: author_id,
         published: published,
         views: view_count,
-        description: description,
         description_html: description_html,
         length_seconds: length_seconds,
         live_now: live_now,
         paid: paid,
-        premium: premium
+        premium: premium,
+        premiere_timestamp: premiere_timestamp
       )
     end
   end
@@ -418,7 +483,7 @@ def extract_shelf_items(nodeset, ucid = nil, author_name = nil)
 
         video_count_label = child_node.xpath_node(%q(.//span[@class="formatted-video-count-label"]))
         if video_count_label
-          video_count = video_count_label.content.strip.match(/^\d+/).try &.[0].to_i?
+          video_count = video_count_label.content.gsub(/\D/, "").to_i?
         end
         video_count ||= 50
 
@@ -450,4 +515,284 @@ def extract_shelf_items(nodeset, ucid = nil, author_name = nil)
   end
 
   return items
+end
+
+def analyze_table(db, logger, table_name, struct_type = nil)
+  # Create table if it doesn't exist
+  begin
+    db.exec("SELECT * FROM #{table_name} LIMIT 0")
+  rescue ex
+    logger.puts("CREATE TABLE #{table_name}")
+
+    db.using_connection do |conn|
+      conn.as(PG::Connection).exec_all(File.read("config/sql/#{table_name}.sql"))
+    end
+  end
+
+  if !struct_type
+    return
+  end
+
+  struct_array = struct_type.to_type_tuple
+  column_array = get_column_array(db, table_name)
+  column_types = File.read("config/sql/#{table_name}.sql").match(/CREATE TABLE public\.#{table_name}\n\((?<types>[\d\D]*?)\);/)
+    .try &.["types"].split(",").map { |line| line.strip }
+
+  if !column_types
+    return
+  end
+
+  struct_array.each_with_index do |name, i|
+    if name != column_array[i]?
+      if !column_array[i]?
+        new_column = column_types.select { |line| line.starts_with? name }[0]
+        logger.puts("ALTER TABLE #{table_name} ADD COLUMN #{new_column}")
+        db.exec("ALTER TABLE #{table_name} ADD COLUMN #{new_column}")
+        next
+      end
+
+      # Column doesn't exist
+      if !column_array.includes? name
+        new_column = column_types.select { |line| line.starts_with? name }[0]
+        db.exec("ALTER TABLE #{table_name} ADD COLUMN #{new_column}")
+      end
+
+      # Column exists but in the wrong position, rotate
+      if struct_array.includes? column_array[i]
+        until name == column_array[i]
+          new_column = column_types.select { |line| line.starts_with? column_array[i] }[0]?.try &.gsub("#{column_array[i]}", "#{column_array[i]}_new")
+
+          # There's a column we didn't expect
+          if !new_column
+            logger.puts("ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]}")
+            db.exec("ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]} CASCADE")
+
+            column_array = get_column_array(db, table_name)
+            next
+          end
+
+          logger.puts("ALTER TABLE #{table_name} ADD COLUMN #{new_column}")
+          db.exec("ALTER TABLE #{table_name} ADD COLUMN #{new_column}")
+
+          logger.puts("UPDATE #{table_name} SET #{column_array[i]}_new=#{column_array[i]}")
+          db.exec("UPDATE #{table_name} SET #{column_array[i]}_new=#{column_array[i]}")
+
+          logger.puts("ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]} CASCADE")
+          db.exec("ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]} CASCADE")
+
+          logger.puts("ALTER TABLE #{table_name} RENAME COLUMN #{column_array[i]}_new TO #{column_array[i]}")
+          db.exec("ALTER TABLE #{table_name} RENAME COLUMN #{column_array[i]}_new TO #{column_array[i]}")
+
+          column_array = get_column_array(db, table_name)
+        end
+      else
+        logger.puts("ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]} CASCADE")
+        db.exec("ALTER TABLE #{table_name} DROP COLUMN #{column_array[i]} CASCADE")
+      end
+    end
+  end
+end
+
+class PG::ResultSet
+  def field(index = @column_index)
+    @fields.not_nil![index]
+  end
+end
+
+def get_column_array(db, table_name)
+  column_array = [] of String
+  db.query("SELECT * FROM #{table_name} LIMIT 0") do |rs|
+    rs.column_count.times do |i|
+      column = rs.as(PG::ResultSet).field(i)
+      column_array << column.name
+    end
+  end
+
+  return column_array
+end
+
+def cache_annotation(db, id, annotations)
+  if !CONFIG.cache_annotations
+    return
+  end
+
+  body = XML.parse(annotations)
+  nodeset = body.xpath_nodes(%q(/document/annotations/annotation))
+
+  if nodeset == 0
+    return
+  end
+
+  has_legacy_annotations = false
+  nodeset.each do |node|
+    if !{"branding", "card", "drawer"}.includes? node["type"]?
+      has_legacy_annotations = true
+      break
+    end
+  end
+
+  if has_legacy_annotations
+    # TODO: Update on conflict?
+    db.exec("INSERT INTO annotations VALUES ($1, $2) ON CONFLICT DO NOTHING", id, annotations)
+  end
+end
+
+def proxy_file(response, env)
+  if !response.body_io?
+    return
+  end
+
+  if response.headers.includes_word?("Content-Encoding", "gzip")
+    Gzip::Writer.open(env.response) do |deflate|
+      copy_in_chunks(response.body_io, deflate)
+    end
+  elsif response.headers.includes_word?("Content-Encoding", "deflate")
+    Flate::Writer.open(env.response) do |deflate|
+      copy_in_chunks(response.body_io, deflate)
+    end
+  else
+    copy_in_chunks(response.body_io, env.response)
+  end
+end
+
+# https://stackoverflow.com/a/44802810 <3
+def copy_in_chunks(input, output, chunk_size = 4096)
+  size = 1
+  while size > 0
+    size = IO.copy(input, output, chunk_size)
+    Fiber.yield
+  end
+end
+
+def create_notification_stream(env, proxies, config, kemal_config, decrypt_function, topics, connection_channel)
+  connection = Channel(PQ::Notification).new(8)
+  connection_channel.send({true, connection})
+
+  locale = LOCALES[env.get("preferences").as(Preferences).locale]?
+
+  since = env.params.query["since"]?.try &.to_i?
+  id = 0
+
+  if topics.includes? "debug"
+    spawn do
+      begin
+        loop do
+          time_span = [0, 0, 0, 0]
+          time_span[rand(4)] = rand(30) + 5
+          published = Time.utc - Time::Span.new(time_span[0], time_span[1], time_span[2], time_span[3])
+          video_id = TEST_IDS[rand(TEST_IDS.size)]
+
+          video = get_video(video_id, PG_DB, proxies)
+          video.published = published
+          response = JSON.parse(video.to_json(locale, config, kemal_config, decrypt_function))
+
+          if fields_text = env.params.query["fields"]?
+            begin
+              JSONFilter.filter(response, fields_text)
+            rescue ex
+              env.response.status_code = 400
+              response = {"error" => ex.message}
+            end
+          end
+
+          env.response.puts "id: #{id}"
+          env.response.puts "data: #{response.to_json}"
+          env.response.puts
+          env.response.flush
+
+          id += 1
+
+          sleep 1.minute
+        end
+      rescue ex
+      end
+    end
+  end
+
+  spawn do
+    begin
+      if since
+        topics.try &.each do |topic|
+          case topic
+          when .match(/UC[A-Za-z0-9_-]{22}/)
+            PG_DB.query_all("SELECT * FROM channel_videos WHERE ucid = $1 AND published > $2 ORDER BY published DESC LIMIT 15",
+              topic, Time.unix(since.not_nil!), as: ChannelVideo).each do |video|
+              response = JSON.parse(video.to_json(locale, config, Kemal.config))
+
+              if fields_text = env.params.query["fields"]?
+                begin
+                  JSONFilter.filter(response, fields_text)
+                rescue ex
+                  env.response.status_code = 400
+                  response = {"error" => ex.message}
+                end
+              end
+
+              env.response.puts "id: #{id}"
+              env.response.puts "data: #{response.to_json}"
+              env.response.puts
+              env.response.flush
+
+              id += 1
+            end
+          else
+            # TODO
+          end
+        end
+      end
+    end
+  end
+
+  spawn do
+    begin
+      loop do
+        event = connection.receive
+
+        notification = JSON.parse(event.payload)
+        topic = notification["topic"].as_s
+        video_id = notification["videoId"].as_s
+        published = notification["published"].as_i64
+
+        if !topics.try &.includes? topic
+          next
+        end
+
+        video = get_video(video_id, PG_DB, proxies)
+        video.published = Time.unix(published)
+        response = JSON.parse(video.to_json(locale, config, Kemal.config, decrypt_function))
+
+        if fields_text = env.params.query["fields"]?
+          begin
+            JSONFilter.filter(response, fields_text)
+          rescue ex
+            env.response.status_code = 400
+            response = {"error" => ex.message}
+          end
+        end
+
+        env.response.puts "id: #{id}"
+        env.response.puts "data: #{response.to_json}"
+        env.response.puts
+        env.response.flush
+
+        id += 1
+      end
+    rescue ex
+    ensure
+      connection_channel.send({false, connection})
+    end
+  end
+
+  begin
+    # Send heartbeat
+    loop do
+      env.response.puts ":keepalive #{Time.utc.to_unix}"
+      env.response.puts
+      env.response.flush
+      sleep (20 + rand(11)).seconds
+    end
+  rescue ex
+  ensure
+    connection_channel.send({false, connection})
+  end
 end

@@ -58,6 +58,7 @@ div {
 }
 
 .loading {
+  display: inline-block;
   animation: spin 2s linear infinite;
 }
 
@@ -80,11 +81,15 @@ a.pure-button-primary:hover {
 }
 
 div.thumbnail {
+  padding: 28.125%;
   position: relative;
+  box-sizing: border-box;
 }
 
 img.thumbnail {
+  position: absolute;
   width: 100%;
+  height: 100%;
   left: 0;
   top: 0;
 }
@@ -98,8 +103,8 @@ img.thumbnail {
   padding: 2px;
   font-size: 16px;
   font-family: sans-serif;
-  right: 0.5em;
-  bottom: -0.5em;
+  right: 0.25em;
+  bottom: -0.75em;
 }
 
 .watched {
@@ -157,6 +162,15 @@ img.thumbnail {
   -webkit-appearance: none;
 }
 
+/* https://stackoverflow.com/a/55170420 */
+input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  height: 14px;
+  width: 14px;
+  background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAAn0lEQVR42u3UMQrDMBBEUZ9WfQqDmm22EaTyjRMHAlM5K+Y7lb0wnUZPIKHlnutOa+25Z4D++MRBX98MD1V/trSppLKHqj9TTBWKcoUqffbUcbBBEhTjBOV4ja4l4OIAZThEOV6jHO8ARXD+gPPvKMABinGOrnu6gTNUawrcQKNCAQ7QeTxORzle3+sDfjJpPCqhJh7GixZq4rHcc9l5A9qZ+WeBhgEuAAAAAElFTkSuQmCC);
+  background-size: 14px;
+}
+
 .navbar > .searchbar .pure-form fieldset {
   padding: 0;
 }
@@ -208,6 +222,11 @@ img.thumbnail {
   .navbar > .searchbar > form {
     width: 60%;
   }
+
+  h1 {
+    font-size: 1.25em;
+    margin: 0.42em 0;
+  }
 }
 
 @media screen and (max-width: 320px) {
@@ -217,7 +236,7 @@ img.thumbnail {
   }
 }
 
-/* 
+/*
  * Footer
  */
 
@@ -251,6 +270,46 @@ img.thumbnail {
   }
 }
 
+.vjs-play-control,
+.vjs-volume-panel,
+.vjs-current-time,
+.vjs-time-control,
+.vjs-duration,
+.vjs-progress-control,
+.vjs-remaining-time {
+  order: 1;
+}
+
+.vjs-captions-button {
+  order: 2;
+}
+
+.vjs-quality-selector,
+.video-js .vjs-http-source-selector {
+  order: 3;
+}
+
+.vjs-playback-rate {
+  order: 4;
+}
+
+.vjs-share-control {
+  order: 5;
+}
+
+.vjs-fullscreen-control {
+  order: 6;
+}
+
+.vjs-control-bar {
+  display: flex;
+  flex-direction: row;
+}
+
+.video-js .vjs-icon-cog {
+  font-size: 18px;
+}
+
 .video-js .vjs-control-bar,
 .vjs-menu-button-popup .vjs-menu .vjs-menu-content {
   background-color: rgba(35, 35, 35, 0.75);
@@ -273,6 +332,11 @@ img.thumbnail {
   background-color: rgba(15, 15, 15, 0.5);
 }
 
+fieldset > select,
+span > select {
+  color: rgba(49, 49, 51, 1);
+}
+
 .video-js .vjs-load-progress,
 .video-js .vjs-load-progress div {
   background: rgba(87, 87, 88, 1);
@@ -285,6 +349,12 @@ img.thumbnail {
 
 .video-js .vjs-play-progress {
   background-color: rgba(0, 182, 240, 1);
+}
+
+/* Overlay */
+.video-js .vjs-overlay {
+  background-color: rgba(35, 35, 35, 0.5);
+  color: rgba(255, 255, 255, 1);
 }
 
 /* ProgressBar marker */
@@ -322,27 +392,15 @@ img.thumbnail {
   padding-top: 82vh;
 }
 
+video.video-js {
+  position: absolute;
+  height: 100%;
+}
+
 #player-container {
   position: relative;
   padding-bottom: 82vh;
   height: 0;
-}
-
-#progress-container {
-  width: 100%;
-  border-radius: 2px;
-  background-color: #a0a0a0;
-  color: rgba(35, 35, 35, 1);
-}
-
-#download-progress {
-  width: 0%;
-  border-radius: 2px;
-  height: 10px;
-  background-color: rgba(0, 182, 240, 1);
-  color: #fff;
-  margin-top: 0.5em;
-  margin-bottom: 0.5em;
 }
 
 .pure-control-group label {

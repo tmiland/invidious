@@ -1,30 +1,157 @@
-class SearchVideo
-  add_mapping({
-    title:            String,
-    id:               String,
-    author:           String,
-    ucid:             String,
-    published:        Time,
-    views:            Int64,
-    description:      String,
-    description_html: String,
-    length_seconds:   Int32,
-    live_now:         Bool,
-    paid:             Bool,
-    premium:          Bool,
+struct SearchVideo
+  def to_xml(host_url, auto_generated, xml : XML::Builder)
+    xml.element("entry") do
+      xml.element("id") { xml.text "yt:video:#{self.id}" }
+      xml.element("yt:videoId") { xml.text self.id }
+      xml.element("yt:channelId") { xml.text self.ucid }
+      xml.element("title") { xml.text self.title }
+      xml.element("link", rel: "alternate", href: "#{host_url}/watch?v=#{self.id}")
+
+      xml.element("author") do
+        if auto_generated
+          xml.element("name") { xml.text self.author }
+          xml.element("uri") { xml.text "#{host_url}/channel/#{self.ucid}" }
+        else
+          xml.element("name") { xml.text author }
+          xml.element("uri") { xml.text "#{host_url}/channel/#{ucid}" }
+        end
+      end
+
+      xml.element("content", type: "xhtml") do
+        xml.element("div", xmlns: "http://www.w3.org/1999/xhtml") do
+          xml.element("a", href: "#{host_url}/watch?v=#{self.id}") do
+            xml.element("img", src: "#{host_url}/vi/#{self.id}/mqdefault.jpg")
+          end
+        end
+      end
+
+      xml.element("published") { xml.text self.published.to_s("%Y-%m-%dT%H:%M:%S%:z") }
+
+      xml.element("media:group") do
+        xml.element("media:title") { xml.text self.title }
+        xml.element("media:thumbnail", url: "#{host_url}/vi/#{self.id}/mqdefault.jpg",
+          width: "320", height: "180")
+        xml.element("media:description") { xml.text html_to_content(self.description_html) }
+      end
+
+      xml.element("media:community") do
+        xml.element("media:statistics", views: self.views)
+      end
+    end
+  end
+
+  def to_xml(host_url, auto_generated, xml : XML::Builder | Nil = nil)
+    if xml
+      to_xml(host_url, auto_generated, xml)
+    else
+      XML.build do |json|
+        to_xml(host_url, auto_generated, xml)
+      end
+    end
+  end
+
+  def to_json(locale, config, kemal_config, json : JSON::Builder)
+    json.object do
+      json.field "type", "video"
+      json.field "title", self.title
+      json.field "videoId", self.id
+
+      json.field "author", self.author
+      json.field "authorId", self.ucid
+      json.field "authorUrl", "/channel/#{self.ucid}"
+
+      json.field "videoThumbnails" do
+        generate_thumbnails(json, self.id, config, kemal_config)
+      end
+
+      json.field "description", html_to_content(self.description_html)
+      json.field "descriptionHtml", self.description_html
+
+      json.field "viewCount", self.views
+      json.field "published", self.published.to_unix
+      json.field "publishedText", translate(locale, "`x` ago", recode_date(self.published, locale))
+      json.field "lengthSeconds", self.length_seconds
+      json.field "liveNow", self.live_now
+      json.field "paid", self.paid
+      json.field "premium", self.premium
+    end
+  end
+
+  def to_json(locale, config, kemal_config, json : JSON::Builder | Nil = nil)
+    if json
+      to_json(locale, config, kemal_config, json)
+    else
+      JSON.build do |json|
+        to_json(locale, config, kemal_config, json)
+      end
+    end
+  end
+
+  db_mapping({
+    title:              String,
+    id:                 String,
+    author:             String,
+    ucid:               String,
+    published:          Time,
+    views:              Int64,
+    description_html:   String,
+    length_seconds:     Int32,
+    live_now:           Bool,
+    paid:               Bool,
+    premium:            Bool,
+    premiere_timestamp: Time?,
   })
 end
 
-class SearchPlaylistVideo
-  add_mapping({
+struct SearchPlaylistVideo
+  db_mapping({
     title:          String,
     id:             String,
     length_seconds: Int32,
   })
 end
 
-class SearchPlaylist
-  add_mapping({
+struct SearchPlaylist
+  def to_json(locale, config, kemal_config, json : JSON::Builder)
+    json.object do
+      json.field "type", "playlist"
+      json.field "title", self.title
+      json.field "playlistId", self.id
+
+      json.field "author", self.author
+      json.field "authorId", self.ucid
+      json.field "authorUrl", "/channel/#{self.ucid}"
+
+      json.field "videoCount", self.video_count
+      json.field "videos" do
+        json.array do
+          self.videos.each do |video|
+            json.object do
+              json.field "title", video.title
+              json.field "videoId", video.id
+              json.field "lengthSeconds", video.length_seconds
+
+              json.field "videoThumbnails" do
+                generate_thumbnails(json, video.id, config, Kemal.config)
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  def to_json(locale, config, kemal_config, json : JSON::Builder | Nil = nil)
+    if json
+      to_json(locale, config, kemal_config, json)
+    else
+      JSON.build do |json|
+        to_json(locale, config, kemal_config, json)
+      end
+    end
+  end
+
+  db_mapping({
     title:        String,
     id:           String,
     author:       String,
@@ -35,14 +162,51 @@ class SearchPlaylist
   })
 end
 
-class SearchChannel
-  add_mapping({
+struct SearchChannel
+  def to_json(locale, config, kemal_config, json : JSON::Builder)
+    json.object do
+      json.field "type", "channel"
+      json.field "author", self.author
+      json.field "authorId", self.ucid
+      json.field "authorUrl", "/channel/#{self.ucid}"
+
+      json.field "authorThumbnails" do
+        json.array do
+          qualities = {32, 48, 76, 100, 176, 512}
+
+          qualities.each do |quality|
+            json.object do
+              json.field "url", self.author_thumbnail.gsub("=s176-", "=s#{quality}-")
+              json.field "width", quality
+              json.field "height", quality
+            end
+          end
+        end
+      end
+
+      json.field "subCount", self.subscriber_count
+      json.field "videoCount", self.video_count
+      json.field "description", html_to_content(self.description_html)
+      json.field "descriptionHtml", self.description_html
+    end
+  end
+
+  def to_json(locale, config, kemal_config, json : JSON::Builder | Nil = nil)
+    if json
+      to_json(locale, config, kemal_config, json)
+    else
+      JSON.build do |json|
+        to_json(locale, config, kemal_config, json)
+      end
+    end
+  end
+
+  db_mapping({
     author:           String,
     ucid:             String,
     author_thumbnail: String,
     subscriber_count: Int32,
     video_count:      Int32,
-    description:      String,
     description_html: String,
   })
 end
@@ -52,12 +216,18 @@ alias SearchItem = SearchVideo | SearchChannel | SearchPlaylist
 def channel_search(query, page, channel)
   client = make_client(YT_URL)
 
-  response = client.get("/user/#{channel}?disable_polymer=1&hl=en&gl=US")
+  response = client.get("/channel/#{channel}?disable_polymer=1&hl=en&gl=US")
   document = XML.parse_html(response.body)
   canonical = document.xpath_node(%q(//link[@rel="canonical"]))
 
   if !canonical
-    response = client.get("/channel/#{channel}?disable_polymer=1&hl=en&gl=US")
+    response = client.get("/c/#{channel}?disable_polymer=1&hl=en&gl=US")
+    document = XML.parse_html(response.body)
+    canonical = document.xpath_node(%q(//link[@rel="canonical"]))
+  end
+
+  if !canonical
+    response = client.get("/user/#{channel}?disable_polymer=1&hl=en&gl=US")
     document = XML.parse_html(response.body)
     canonical = document.xpath_node(%q(//link[@rel="canonical"]))
   end

@@ -1,5 +1,5 @@
-class InvidiousChannel
-  add_mapping({
+struct InvidiousChannel
+  db_mapping({
     id:         String,
     author:     String,
     updated:    Time,
@@ -8,39 +8,126 @@ class InvidiousChannel
   })
 end
 
-class ChannelVideo
-  add_mapping({
-    id:             String,
-    title:          String,
-    published:      Time,
-    updated:        Time,
-    ucid:           String,
-    author:         String,
-    length_seconds: {type: Int32, default: 0},
+struct ChannelVideo
+  def to_json(locale, config, kemal_config, json : JSON::Builder)
+    json.object do
+      json.field "type", "shortVideo"
+
+      json.field "title", self.title
+      json.field "videoId", self.id
+      json.field "videoThumbnails" do
+        generate_thumbnails(json, self.id, config, Kemal.config)
+      end
+
+      json.field "lengthSeconds", self.length_seconds
+
+      json.field "author", self.author
+      json.field "authorId", self.ucid
+      json.field "authorUrl", "/channel/#{self.ucid}"
+      json.field "published", self.published.to_unix
+      json.field "publishedText", translate(locale, "`x` ago", recode_date(self.published, locale))
+
+      json.field "viewCount", self.views
+    end
+  end
+
+  def to_json(locale, config, kemal_config, json : JSON::Builder | Nil = nil)
+    if json
+      to_json(locale, config, kemal_config, json)
+    else
+      JSON.build do |json|
+        to_json(locale, config, kemal_config, json)
+      end
+    end
+  end
+
+  def to_xml(locale, host_url, xml : XML::Builder)
+    xml.element("entry") do
+      xml.element("id") { xml.text "yt:video:#{self.id}" }
+      xml.element("yt:videoId") { xml.text self.id }
+      xml.element("yt:channelId") { xml.text self.ucid }
+      xml.element("title") { xml.text self.title }
+      xml.element("link", rel: "alternate", href: "#{host_url}/watch?v=#{self.id}")
+
+      xml.element("author") do
+        xml.element("name") { xml.text self.author }
+        xml.element("uri") { xml.text "#{host_url}/channel/#{self.ucid}" }
+      end
+
+      xml.element("content", type: "xhtml") do
+        xml.element("div", xmlns: "http://www.w3.org/1999/xhtml") do
+          xml.element("a", href: "#{host_url}/watch?v=#{self.id}") do
+            xml.element("img", src: "#{host_url}/vi/#{self.id}/mqdefault.jpg")
+          end
+        end
+      end
+
+      xml.element("published") { xml.text self.published.to_s("%Y-%m-%dT%H:%M:%S%:z") }
+      xml.element("updated") { xml.text self.updated.to_s("%Y-%m-%dT%H:%M:%S%:z") }
+
+      xml.element("media:group") do
+        xml.element("media:title") { xml.text self.title }
+        xml.element("media:thumbnail", url: "#{host_url}/vi/#{self.id}/mqdefault.jpg",
+          width: "320", height: "180")
+      end
+    end
+  end
+
+  def to_xml(locale, config, kemal_config, xml : XML::Builder | Nil = nil)
+    if xml
+      to_xml(locale, config, kemal_config, xml)
+    else
+      XML.build do |xml|
+        to_xml(locale, config, kemal_config, xml)
+      end
+    end
+  end
+
+  db_mapping({
+    id:                 String,
+    title:              String,
+    published:          Time,
+    updated:            Time,
+    ucid:               String,
+    author:             String,
+    length_seconds:     {type: Int32, default: 0},
+    live_now:           {type: Bool, default: false},
+    premiere_timestamp: {type: Time?, default: nil},
+    views:              {type: Int64?, default: nil},
   })
 end
 
 def get_batch_channels(channels, db, refresh = false, pull_all_videos = true, max_threads = 10)
-  active_threads = 0
-  active_channel = Channel(String | Nil).new
+  finished_channel = Channel(String | Nil).new
 
-  final = [] of String
-  channels.map do |ucid|
-    if active_threads >= max_threads
-      if response = active_channel.receive
+  spawn do
+    active_threads = 0
+    active_channel = Channel(Nil).new
+
+    channels.each do |ucid|
+      if active_threads >= max_threads
+        active_channel.receive
         active_threads -= 1
-        final << response
+      end
+
+      active_threads += 1
+      spawn do
+        begin
+          get_channel(ucid, db, refresh, pull_all_videos)
+          finished_channel.send(ucid)
+        rescue ex
+          finished_channel.send(nil)
+        ensure
+          active_channel.send(nil)
+        end
       end
     end
+  end
 
-    active_threads += 1
-    spawn do
-      begin
-        get_channel(ucid, db, refresh, pull_all_videos)
-        active_channel.send(ucid)
-      rescue ex
-        active_channel.send(nil)
-      end
+  final = [] of String
+  channels.size.times do
+    if ucid = finished_channel.receive
+      final << ucid
     end
   end
 
@@ -48,10 +135,8 @@ def get_batch_channels(channels, db, refresh = false, pull_all_videos = true, ma
 end
 
 def get_channel(id, db, refresh = true, pull_all_videos = true)
-  if db.query_one?("SELECT EXISTS (SELECT true FROM channels WHERE id = $1)", id, as: Bool)
-    channel = db.query_one("SELECT * FROM channels WHERE id = $1", id, as: InvidiousChannel)
-
-    if refresh && Time.now - channel.updated > 10.minutes
+  if channel = db.query_one?("SELECT * FROM channels WHERE id = $1", id, as: InvidiousChannel)
+    if refresh && Time.utc - channel.updated > 10.minutes
       channel = fetch_channel(id, db, pull_all_videos: pull_all_videos)
       channel_array = channel.to_a
       args = arg_array(channel_array)
@@ -89,51 +174,85 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
     auto_generated = true
   end
 
-  if !pull_all_videos
-    url = produce_channel_videos_url(ucid, 1, auto_generated: auto_generated)
-    response = client.get(url)
-    json = JSON.parse(response.body)
+  page = 1
 
-    if json["content_html"]? && !json["content_html"].as_s.empty?
-      document = XML.parse_html(json["content_html"].as_s)
-      nodeset = document.xpath_nodes(%q(//li[contains(@class, "feed-item-container")]))
+  url = produce_channel_videos_url(ucid, page, auto_generated: auto_generated)
+  response = client.get(url)
+  json = JSON.parse(response.body)
 
-      if auto_generated
-        videos = extract_videos(nodeset)
-      else
-        videos = extract_videos(nodeset, ucid)
-        videos.each { |video| video.ucid = ucid }
-        videos.each { |video| video.author = author }
-      end
+  if json["content_html"]? && !json["content_html"].as_s.empty?
+    document = XML.parse_html(json["content_html"].as_s)
+    nodeset = document.xpath_nodes(%q(//li[contains(@class, "feed-item-container")]))
+
+    if auto_generated
+      videos = extract_videos(nodeset)
+    else
+      videos = extract_videos(nodeset, ucid, author)
     end
+  end
 
-    videos ||= [] of ChannelVideo
+  videos ||= [] of ChannelVideo
 
-    rss.xpath_nodes("//feed/entry").each do |entry|
-      video_id = entry.xpath_node("videoid").not_nil!.content
-      title = entry.xpath_node("title").not_nil!.content
-      published = Time.parse_rfc3339(entry.xpath_node("published").not_nil!.content)
-      updated = Time.parse_rfc3339(entry.xpath_node("updated").not_nil!.content)
-      author = entry.xpath_node("author/name").not_nil!.content
-      ucid = entry.xpath_node("channelid").not_nil!.content
+  rss.xpath_nodes("//feed/entry").each do |entry|
+    video_id = entry.xpath_node("videoid").not_nil!.content
+    title = entry.xpath_node("title").not_nil!.content
+    published = Time.parse_rfc3339(entry.xpath_node("published").not_nil!.content)
+    updated = Time.parse_rfc3339(entry.xpath_node("updated").not_nil!.content)
+    author = entry.xpath_node("author/name").not_nil!.content
+    ucid = entry.xpath_node("channelid").not_nil!.content
+    views = entry.xpath_node("group/community/statistics").try &.["views"]?.try &.to_i64?
+    views ||= 0_i64
 
-      length_seconds = videos.select { |video| video.id == video_id }[0]?.try &.length_seconds
-      length_seconds ||= 0
+    channel_video = videos.select { |video| video.id == video_id }[0]?
 
-      video = ChannelVideo.new(video_id, title, published, Time.now, ucid, author, length_seconds)
+    length_seconds = channel_video.try &.length_seconds
+    length_seconds ||= 0
 
-      db.exec("UPDATE users SET notifications = notifications || $1 \
-        WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications)", video.id, video.published, ucid)
+    live_now = channel_video.try &.live_now
+    live_now ||= false
 
-      video_array = video.to_a
-      args = arg_array(video_array)
+    premiere_timestamp = channel_video.try &.premiere_timestamp
 
-      db.exec("INSERT INTO channel_videos VALUES (#{args}) \
+    video = ChannelVideo.new(
+      id: video_id,
+      title: title,
+      published: published,
+      updated: Time.utc,
+      ucid: ucid,
+      author: author,
+      length_seconds: length_seconds,
+      live_now: live_now,
+      premiere_timestamp: premiere_timestamp,
+      views: views,
+    )
+
+    emails = db.query_all("UPDATE users SET notifications = notifications || $1 \
+      WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications) RETURNING email",
+      video.id, video.published, ucid, as: String)
+
+    video_array = video.to_a
+    args = arg_array(video_array)
+
+    # We don't include the 'premiere_timestamp' here because channel pages don't include them,
+    # meaning the above timestamp is always null
+    db.exec("INSERT INTO channel_videos VALUES (#{args}) \
       ON CONFLICT (id) DO UPDATE SET title = $2, published = $3, \
-      updated = $4, ucid = $5, author = $6, length_seconds = $7", video_array)
+      updated = $4, ucid = $5, author = $6, length_seconds = $7, \
+      live_now = $8, views = $10", video_array)
+
+    # Update all users affected by insert
+    if emails.empty?
+      values = "'{}'"
+    else
+      values = "VALUES #{emails.map { |id| %(('#{id}')) }.join(",")}"
     end
-  else
-    page = 1
+
+    db.exec("UPDATE users SET feed_needs_update = true WHERE email = ANY(#{values})")
+  end
+
+  if pull_all_videos
+    page += 1
+
     ids = [] of String
 
     loop do
@@ -148,34 +267,59 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
         break
       end
 
+      nodeset = nodeset.not_nil!
+
       if auto_generated
         videos = extract_videos(nodeset)
       else
-        videos = extract_videos(nodeset, ucid)
-        videos.each { |video| video.ucid = ucid }
-        videos.each { |video| video.author = author }
+        videos = extract_videos(nodeset, ucid, author)
       end
 
       count = nodeset.size
-      videos = videos.map { |video| ChannelVideo.new(video.id, video.title, video.published, Time.now, video.ucid, video.author, video.length_seconds) }
+      videos = videos.map { |video| ChannelVideo.new(
+        id: video.id,
+        title: video.title,
+        published: video.published,
+        updated: Time.utc,
+        ucid: video.ucid,
+        author: video.author,
+        length_seconds: video.length_seconds,
+        live_now: video.live_now,
+        premiere_timestamp: video.premiere_timestamp,
+        views: video.views
+      ) }
 
       videos.each do |video|
         ids << video.id
 
-        # FIXME: Red videos don't provide published date, so the best we can do is ignore them
-        if Time.now - video.published > 1.minute
-          db.exec("UPDATE users SET notifications = notifications || $1 \
-          WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications)", video.id, video.published, video.ucid)
+        # We are notified of Red videos elsewhere (PubSub), which includes a correct published date,
+        # so since they don't provide a published date here we can safely ignore them.
+        if Time.utc - video.published > 1.minute
+          emails = db.query_all("UPDATE users SET notifications = notifications || $1 \
+            WHERE updated < $2 AND $3 = ANY(subscriptions) AND $1 <> ALL(notifications) RETURNING email",
+            video.id, video.published, video.ucid, as: String)
 
           video_array = video.to_a
           args = arg_array(video_array)
 
-          db.exec("INSERT INTO channel_videos VALUES (#{args}) ON CONFLICT (id) DO UPDATE SET title = $2, \
-          published = $3, updated = $4, ucid = $5, author = $6, length_seconds = $7", video_array)
+          # We don't update the 'premire_timestamp' here because channel pages don't include them
+          db.exec("INSERT INTO channel_videos VALUES (#{args}) \
+            ON CONFLICT (id) DO UPDATE SET title = $2, published = $3, \
+            updated = $4, ucid = $5, author = $6, length_seconds = $7, \
+            live_now = $8, views = $10", video_array)
+
+          # Update all users affected by insert
+          if emails.empty?
+            values = "'{}'"
+          else
+            values = "VALUES #{emails.map { |id| %(('#{id}')) }.join(",")}"
+          end
+
+          db.exec("UPDATE users SET feed_needs_update = true WHERE email = ANY(#{values})")
         end
       end
 
-      if count < 30
+      if count < 25
         break
       end
 
@@ -186,29 +330,9 @@ def fetch_channel(ucid, db, pull_all_videos = true, locale = nil)
     db.exec("DELETE FROM channel_videos * WHERE NOT id = ANY ('{#{ids.map { |id| %("#{id}") }.join(",")}}') AND ucid = $1", ucid)
   end
 
-  channel = InvidiousChannel.new(ucid, author, Time.now, false, nil)
+  channel = InvidiousChannel.new(ucid, author, Time.utc, false, nil)
 
   return channel
-end
-
-def subscribe_pubsub(ucid, key, config)
-  client = make_client(PUBSUB_URL)
-  time = Time.now.to_unix.to_s
-  nonce = Random::Secure.hex(4)
-  signature = "#{time}:#{nonce}"
-
-  host_url = make_host_url(config, Kemal.config)
-
-  body = {
-    "hub.callback"      => "#{host_url}/feed/webhook/v1:#{time}:#{nonce}:#{OpenSSL::HMAC.hexdigest(:sha1, key, signature)}",
-    "hub.topic"         => "https://www.youtube.com/xml/feeds/videos.xml?channel_id=#{ucid}",
-    "hub.verify"        => "async",
-    "hub.mode"          => "subscribe",
-    "hub.lease_seconds" => "432000",
-    "hub.secret"        => key.to_s,
-  }
-
-  return client.post("/subscribe", form: body)
 end
 
 def fetch_channel_playlists(ucid, author, auto_generated, continuation, sort_by)
@@ -274,7 +398,7 @@ def produce_channel_videos_url(ucid, page = 1, auto_generated = nil, sort_by = "
   if auto_generated
     seed = Time.unix(1525757349)
 
-    until seed >= Time.now
+    until seed >= Time.utc
       seed += 1.month
     end
     timestamp = seed - (page - 1).months

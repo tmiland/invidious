@@ -1,56 +1,33 @@
 require "crypto/bcrypt/password"
 
-class User
+struct User
   module PreferencesConverter
     def self.from_rs(rs)
       begin
         Preferences.from_json(rs.read(String))
       rescue ex
-        DEFAULT_USER_PREFERENCES
+        Preferences.from_json("{}")
       end
     end
   end
 
-  add_mapping({
+  db_mapping({
     updated:       Time,
     notifications: Array(String),
     subscriptions: Array(String),
     email:         String,
     preferences:   {
       type:      Preferences,
-      default:   DEFAULT_USER_PREFERENCES,
       converter: PreferencesConverter,
     },
-    password: String?,
-    token:    String,
-    watched:  Array(String),
+    password:          String?,
+    token:             String,
+    watched:           Array(String),
+    feed_needs_update: Bool?,
   })
 end
 
-DEFAULT_USER_PREFERENCES = Preferences.from_json({
-  "video_loop"         => false,
-  "autoplay"           => false,
-  "continue"           => false,
-  "local"              => false,
-  "listen"             => false,
-  "speed"              => 1.0,
-  "quality"            => "hd720",
-  "volume"             => 100,
-  "comments"           => ["youtube", ""],
-  "captions"           => ["", "", ""],
-  "related_videos"     => true,
-  "redirect_feed"      => false,
-  "locale"             => "en-US",
-  "dark_mode"          => false,
-  "thin_mode"          => false,
-  "max_results"        => 40,
-  "sort"               => "published",
-  "latest_only"        => false,
-  "unseen_only"        => false,
-  "notifications_only" => false,
-}.to_json)
-
-class Preferences
+struct Preferences
   module StringToArray
     def self.to_json(value : Array(String), json : JSON::Builder)
       json.array do
@@ -64,68 +41,109 @@ class Preferences
       begin
         result = [] of String
         value.read_array do
-          result << value.read_string
+          result << HTML.escape(value.read_string[0, 100])
         end
       rescue ex
-        result = [value.read_string, ""]
+        result = [HTML.escape(value.read_string[0, 100]), ""]
+      end
+
+      result
+    end
+
+    def self.to_yaml(value : Array(String), yaml : YAML::Nodes::Builder)
+      yaml.sequence do
+        value.each do |element|
+          yaml.scalar element
+        end
+      end
+    end
+
+    def self.from_yaml(ctx : YAML::ParseContext, node : YAML::Nodes::Node) : Array(String)
+      begin
+        unless node.is_a?(YAML::Nodes::Sequence)
+          node.raise "Expected sequence, not #{node.class}"
+        end
+
+        result = [] of String
+        node.nodes.each do |item|
+          unless item.is_a?(YAML::Nodes::Scalar)
+            node.raise "Expected scalar, not #{item.class}"
+          end
+
+          result << HTML.escape(item.value[0, 100])
+        end
+      rescue ex
+        if node.is_a?(YAML::Nodes::Scalar)
+          result = [HTML.escape(node.value[0, 100]), ""]
+        else
+          result = ["", ""]
+        end
       end
 
       result
     end
   end
 
-  JSON.mapping({
-    video_loop: Bool,
-    autoplay:   Bool,
-    continue:   {
-      type:    Bool,
-      default: DEFAULT_USER_PREFERENCES.continue,
-    },
-    local: {
-      type:    Bool,
-      default: DEFAULT_USER_PREFERENCES.local,
-    },
-    listen: {
-      type:    Bool,
-      default: DEFAULT_USER_PREFERENCES.listen,
-    },
-    speed:    Float32,
-    quality:  String,
-    volume:   Int32,
-    comments: {
-      type:      Array(String),
-      default:   DEFAULT_USER_PREFERENCES.comments,
-      converter: StringToArray,
-    },
-    captions: {
-      type:    Array(String),
-      default: DEFAULT_USER_PREFERENCES.captions,
-    },
-    redirect_feed: {
-      type:    Bool,
-      default: DEFAULT_USER_PREFERENCES.redirect_feed,
-    },
-    related_videos: {
-      type:    Bool,
-      default: DEFAULT_USER_PREFERENCES.related_videos,
-    },
-    dark_mode: Bool,
-    thin_mode: {
-      type:    Bool,
-      default: DEFAULT_USER_PREFERENCES.thin_mode,
-    },
-    max_results:        Int32,
-    sort:               String,
-    latest_only:        Bool,
-    unseen_only:        Bool,
-    notifications_only: {
-      type:    Bool,
-      default: DEFAULT_USER_PREFERENCES.notifications_only,
-    },
-    locale: {
-      type:    String,
-      default: DEFAULT_USER_PREFERENCES.locale,
-    },
+  module ProcessString
+    def self.to_json(value : String, json : JSON::Builder)
+      json.string value
+    end
+
+    def self.from_json(value : JSON::PullParser) : String
+      HTML.escape(value.read_string[0, 100])
+    end
+
+    def self.to_yaml(value : String, yaml : YAML::Nodes::Builder)
+      yaml.scalar value
+    end
+
+    def self.from_yaml(ctx : YAML::ParseContext, node : YAML::Nodes::Node) : String
+      HTML.escape(node.value[0, 100])
+    end
+  end
+
+  module ClampInt
+    def self.to_json(value : Int32, json : JSON::Builder)
+      json.number value
+    end
+
+    def self.from_json(value : JSON::PullParser) : Int32
+      value.read_int.clamp(0, MAX_ITEMS_PER_PAGE).to_i32
+    end
+
+    def self.to_yaml(value : Int32, yaml : YAML::Nodes::Builder)
+      yaml.scalar value
+    end
+
+    def self.from_yaml(ctx : YAML::ParseContext, node : YAML::Nodes::Node) : Int32
+      node.value.clamp(0, MAX_ITEMS_PER_PAGE)
+    end
+  end
+
+  json_mapping({
+    annotations:            {type: Bool, default: CONFIG.default_user_preferences.annotations},
+    annotations_subscribed: {type: Bool, default: CONFIG.default_user_preferences.annotations_subscribed},
+    autoplay:               {type: Bool, default: CONFIG.default_user_preferences.autoplay},
+    captions:               {type: Array(String), default: CONFIG.default_user_preferences.captions, converter: StringToArray},
+    comments:               {type: Array(String), default: CONFIG.default_user_preferences.comments, converter: StringToArray},
+    continue:               {type: Bool, default: CONFIG.default_user_preferences.continue},
+    continue_autoplay:      {type: Bool, default: CONFIG.default_user_preferences.continue_autoplay},
+    dark_mode:              {type: Bool, default: CONFIG.default_user_preferences.dark_mode},
+    latest_only:            {type: Bool, default: CONFIG.default_user_preferences.latest_only},
+    listen:                 {type: Bool, default: CONFIG.default_user_preferences.listen},
+    local:                  {type: Bool, default: CONFIG.default_user_preferences.local},
+    locale:                 {type: String, default: CONFIG.default_user_preferences.locale, converter: ProcessString},
+    max_results:            {type: Int32, default: CONFIG.default_user_preferences.max_results, converter: ClampInt},
+    notifications_only:     {type: Bool, default: CONFIG.default_user_preferences.notifications_only},
+    quality:                {type: String, default: CONFIG.default_user_preferences.quality, converter: ProcessString},
+    redirect_feed:          {type: Bool, default: CONFIG.default_user_preferences.redirect_feed},
+    related_videos:         {type: Bool, default: CONFIG.default_user_preferences.related_videos},
+    sort:                   {type: String, default: CONFIG.default_user_preferences.sort, converter: ProcessString},
+    speed:                  {type: Float32, default: CONFIG.default_user_preferences.speed},
+    thin_mode:              {type: Bool, default: CONFIG.default_user_preferences.thin_mode},
+    unseen_only:            {type: Bool, default: CONFIG.default_user_preferences.unseen_only},
+    video_loop:             {type: Bool, default: CONFIG.default_user_preferences.video_loop},
+    volume:                 {type: Int32, default: CONFIG.default_user_preferences.volume},
   })
 end
 
@@ -133,7 +151,7 @@ def get_user(sid, headers, db, refresh = true)
   if email = db.query_one?("SELECT email FROM session_ids WHERE id = $1", sid, as: String)
     user = db.query_one("SELECT * FROM users WHERE email = $1", email, as: User)
 
-    if refresh && Time.now - user.updated > 1.minute
+    if refresh && Time.utc - user.updated > 1.minute
       user, sid = fetch_user(sid, headers, db)
       user_array = user.to_a
 
@@ -144,14 +162,14 @@ def get_user(sid, headers, db, refresh = true)
       ON CONFLICT (email) DO UPDATE SET updated = $1, subscriptions = $3", user_array)
 
       db.exec("INSERT INTO session_ids VALUES ($1,$2,$3) \
-      ON CONFLICT (id) DO NOTHING", sid, user.email, Time.now)
+      ON CONFLICT (id) DO NOTHING", sid, user.email, Time.utc)
 
       begin
-        view_name = "subscriptions_#{sha256(user.email)[0..7]}"
+        view_name = "subscriptions_#{sha256(user.email)}"
         db.exec("CREATE MATERIALIZED VIEW #{view_name} AS \
-        SELECT * FROM channel_videos WHERE \
-        ucid = ANY ((SELECT subscriptions FROM users WHERE email = E'#{user.email.gsub("'", "\\'")}')::text[]) \
-        ORDER BY published DESC;")
+          SELECT * FROM channel_videos WHERE
+          ucid IN (SELECT unnest(subscriptions) FROM users WHERE email = E'#{user.email.gsub("'", "\\'")}')
+          ORDER BY published DESC")
       rescue ex
       end
     end
@@ -166,14 +184,14 @@ def get_user(sid, headers, db, refresh = true)
     ON CONFLICT (email) DO UPDATE SET updated = $1, subscriptions = $3", user_array)
 
     db.exec("INSERT INTO session_ids VALUES ($1,$2,$3) \
-    ON CONFLICT (id) DO NOTHING", sid, user.email, Time.now)
+    ON CONFLICT (id) DO NOTHING", sid, user.email, Time.utc)
 
     begin
-      view_name = "subscriptions_#{sha256(user.email)[0..7]}"
+      view_name = "subscriptions_#{sha256(user.email)}"
       db.exec("CREATE MATERIALIZED VIEW #{view_name} AS \
-      SELECT * FROM channel_videos WHERE \
-      ucid = ANY ((SELECT subscriptions FROM users WHERE email = E'#{user.email.gsub("'", "\\'")}')::text[]) \
-      ORDER BY published DESC;")
+        SELECT * FROM channel_videos WHERE
+        ucid IN (SELECT unnest(subscriptions) FROM users WHERE email = E'#{user.email.gsub("'", "\\'")}')
+        ORDER BY published DESC")
     rescue ex
     end
   end
@@ -206,7 +224,7 @@ def fetch_user(sid, headers, db)
 
   token = Base64.urlsafe_encode(Random::Secure.random_bytes(32))
 
-  user = User.new(Time.now, [] of String, channels, email, DEFAULT_USER_PREFERENCES, nil, token, [] of String)
+  user = User.new(Time.utc, [] of String, channels, email, CONFIG.default_user_preferences, nil, token, [] of String, true)
   return user, sid
 end
 
@@ -214,68 +232,9 @@ def create_user(sid, email, password)
   password = Crypto::Bcrypt::Password.create(password, cost: 10)
   token = Base64.urlsafe_encode(Random::Secure.random_bytes(32))
 
-  user = User.new(Time.now, [] of String, [] of String, email, DEFAULT_USER_PREFERENCES, password.to_s, token, [] of String)
+  user = User.new(Time.utc, [] of String, [] of String, email, CONFIG.default_user_preferences, password.to_s, token, [] of String, true)
 
   return user, sid
-end
-
-def create_response(user_id, operation, key, db, expire = 6.hours)
-  expire = Time.now + expire
-  nonce = Random::Secure.hex(16)
-  db.exec("INSERT INTO nonces VALUES ($1, $2) ON CONFLICT DO NOTHING", nonce, expire)
-
-  challenge = "#{expire.to_unix}-#{nonce}-#{user_id}-#{operation}"
-  token = OpenSSL::HMAC.digest(:sha256, key, challenge)
-
-  challenge = Base64.urlsafe_encode(challenge)
-  token = Base64.urlsafe_encode(token)
-
-  return challenge, token
-end
-
-def validate_response(challenge, token, user_id, operation, key, db, locale)
-  if !challenge
-    raise translate(locale, "Hidden field \"challenge\" is a required field")
-  end
-
-  if !token
-    raise translate(locale, "Hidden field \"token\" is a required field")
-  end
-
-  challenge = Base64.decode_string(challenge)
-  if challenge.split("-").size == 4
-    expire, nonce, challenge_user_id, challenge_operation = challenge.split("-")
-
-    expire = expire.to_i?
-    expire ||= 0
-  else
-    raise translate(locale, "Invalid challenge")
-  end
-
-  challenge = OpenSSL::HMAC.digest(:sha256, key, challenge)
-  challenge = Base64.urlsafe_encode(challenge)
-
-  if db.query_one?("SELECT EXISTS (SELECT true FROM nonces WHERE nonce = $1)", nonce, as: Bool)
-    db.exec("DELETE FROM nonces * WHERE nonce = $1", nonce)
-  else
-    raise translate(locale, "Invalid token")
-  end
-
-  if challenge != token
-    raise translate(locale, "Invalid token")
-  end
-
-  if challenge_operation != operation
-    raise translate(locale, "Invalid token")
-  end
-
-  if challenge_user_id != user_id
-    raise translate(locale, "Invalid user")
-  end
-
-  if expire < Time.now.to_unix
-    raise translate(locale, "Token is expired, please try again")
-  end
 end
 
 def generate_captcha(key, db)
@@ -296,7 +255,7 @@ def generate_captcha(key, db)
   clock_svg = <<-END_SVG
   <svg viewBox="0 0 100 100" width="200px">
   <circle cx="50" cy="50" r="45" fill="#eee" stroke="black" stroke-width="2"></circle>
-  
+
   <text x="69"     y="20.091" text-anchor="middle" fill="black" font-family="Arial" font-size="10px"> 1</text>
   <text x="82.909" y="34"     text-anchor="middle" fill="black" font-family="Arial" font-size="10px"> 2</text>
   <text x="88"     y="53"     text-anchor="middle" fill="black" font-family="Arial" font-size="10px"> 3</text>
@@ -328,7 +287,153 @@ def generate_captcha(key, db)
   answer = "#{hour}:#{minute.to_s.rjust(2, '0')}:#{second.to_s.rjust(2, '0')}"
   answer = OpenSSL::HMAC.hexdigest(:sha256, key, answer)
 
-  challenge, token = create_response(answer, "sign_in", key, db)
+  return {
+    question: image,
+    tokens:   {generate_response(answer, {":login"}, key, db, use_nonce: true)},
+  }
+end
 
-  return {image: image, challenge: challenge, token: token}
+def generate_text_captcha(key, db)
+  response = make_client(TEXTCAPTCHA_URL).get("/omarroth@protonmail.com.json").body
+  response = JSON.parse(response)
+
+  tokens = response["a"].as_a.map do |answer|
+    generate_response(answer.as_s, {":login"}, key, db, use_nonce: true)
+  end
+
+  return {
+    question: response["q"].as_s,
+    tokens:   tokens,
+  }
+end
+
+def subscribe_ajax(channel_id, action, env_headers)
+  headers = HTTP::Headers.new
+  headers["Cookie"] = env_headers["Cookie"]
+
+  client = make_client(YT_URL)
+  html = client.get("/subscription_manager?disable_polymer=1", headers)
+
+  cookies = HTTP::Cookies.from_headers(headers)
+  html.cookies.each do |cookie|
+    if {"VISITOR_INFO1_LIVE", "YSC", "SIDCC"}.includes? cookie.name
+      if cookies[cookie.name]?
+        cookies[cookie.name] = cookie
+      else
+        cookies << cookie
+      end
+    end
+  end
+  headers = cookies.add_request_headers(headers)
+
+  if match = html.body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/)
+    session_token = match["session_token"]
+
+    headers["content-type"] = "application/x-www-form-urlencoded"
+
+    post_req = {
+      session_token: session_token,
+    }
+    post_url = "/subscription_ajax?#{action}=1&c=#{channel_id}"
+
+    client.post(post_url, headers, form: post_req)
+  end
+end
+
+def get_subscription_feed(db, user, max_results = 40, page = 1)
+  limit = max_results.clamp(0, MAX_ITEMS_PER_PAGE)
+  offset = (page - 1) * limit
+
+  notifications = db.query_one("SELECT notifications FROM users WHERE email = $1", user.email,
+    as: Array(String))
+  view_name = "subscriptions_#{sha256(user.email)}"
+
+  if user.preferences.notifications_only && !notifications.empty?
+    # Only show notifications
+
+    args = arg_array(notifications)
+
+    notifications = db.query_all("SELECT * FROM channel_videos WHERE id IN (#{args})
+    ORDER BY published DESC", notifications, as: ChannelVideo)
+    videos = [] of ChannelVideo
+
+    notifications.sort_by! { |video| video.published }.reverse!
+
+    case user.preferences.sort
+    when "alphabetically"
+      notifications.sort_by! { |video| video.title }
+    when "alphabetically - reverse"
+      notifications.sort_by! { |video| video.title }.reverse!
+    when "channel name"
+      notifications.sort_by! { |video| video.author }
+    when "channel name - reverse"
+      notifications.sort_by! { |video| video.author }.reverse!
+    end
+  else
+    if user.preferences.latest_only
+      if user.preferences.unseen_only
+        # Show latest video from a channel that a user hasn't watched
+        # "unseen_only" isn't really correct here, more accurate would be "unwatched_only"
+
+        if user.watched.empty?
+          values = "'{}'"
+        else
+          values = "VALUES #{user.watched.map { |id| %(('#{id}')) }.join(",")}"
+        end
+        videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM #{view_name} WHERE \
+        NOT id = ANY (#{values}) \
+        ORDER BY ucid, published DESC", as: ChannelVideo)
+      else
+        # Show latest video from each channel
+
+        videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM #{view_name} \
+        ORDER BY ucid, published DESC", as: ChannelVideo)
+      end
+
+      videos.sort_by! { |video| video.published }.reverse!
+    else
+      if user.preferences.unseen_only
+        # Only show unwatched
+
+        if user.watched.empty?
+          values = "'{}'"
+        else
+          values = "VALUES #{user.watched.map { |id| %(('#{id}')) }.join(",")}"
+        end
+        videos = PG_DB.query_all("SELECT * FROM #{view_name} WHERE \
+        NOT id = ANY (#{values}) \
+        ORDER BY published DESC LIMIT $1 OFFSET $2", limit, offset, as: ChannelVideo)
+      else
+        # Sort subscriptions as normal
+
+        videos = PG_DB.query_all("SELECT * FROM #{view_name} \
+        ORDER BY published DESC LIMIT $1 OFFSET $2", limit, offset, as: ChannelVideo)
+      end
+    end
+
+    case user.preferences.sort
+    when "published - reverse"
+      videos.sort_by! { |video| video.published }
+    when "alphabetically"
+      videos.sort_by! { |video| video.title }
+    when "alphabetically - reverse"
+      videos.sort_by! { |video| video.title }.reverse!
+    when "channel name"
+      videos.sort_by! { |video| video.author }
+    when "channel name - reverse"
+      videos.sort_by! { |video| video.author }.reverse!
+    end
+
+    notifications = PG_DB.query_one("SELECT notifications FROM users WHERE email = $1", user.email,
+      as: Array(String))
+
+    notifications = videos.select { |v| notifications.includes? v.id }
+    videos = videos - notifications
+  end
+
+  if !limit
+    videos = videos[0..max_results]
+  end
+
+  return videos, notifications
 end

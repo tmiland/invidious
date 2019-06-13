@@ -1,17 +1,17 @@
-class MixVideo
-  add_mapping({
+struct MixVideo
+  db_mapping({
     title:          String,
     id:             String,
     author:         String,
     ucid:           String,
     length_seconds: Int32,
     index:          Int32,
-    mixes:          Array(String),
+    rdid:           String,
   })
 end
 
-class Mix
-  add_mapping({
+struct Mix
+  db_mapping({
     title:  String,
     id:     String,
     videos: Array(MixVideo),
@@ -70,7 +70,7 @@ def fetch_mix(rdid, video_id, cookies = nil, locale = nil)
       ucid,
       length_seconds,
       index,
-      [rdid]
+      rdid
     )
   end
 
@@ -105,7 +105,7 @@ def template_mix(mix)
           </div>
           <p style="width:100%">#{video["title"]}</p>
           <p>
-              <b style="width: 100%">#{video["author"]}</b>
+              <b style="width:100%">#{video["author"]}</b>
           </p>
         </a>
       </li>

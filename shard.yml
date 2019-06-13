@@ -1,8 +1,8 @@
 name: invidious
-version: 0.15.0
+version: 0.18.0
 
 authors:
-  - Omar Roth <omarroth@hotmail.com>
+  - Omar Roth <omarroth@protonmail.com>
 
 targets:
   invidious:
@@ -13,9 +13,10 @@ dependencies:
     github: kemalcr/kemal
   pg:
     github: will/crystal-pg
+    branch: cafe69e
   sqlite3:
     github: crystal-lang/crystal-sqlite3
 
-crystal: 0.27.2
+crystal: 0.29.0
 
 license: AGPLv3
