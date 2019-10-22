@@ -29,8 +29,9 @@
 <script>
 var video_data = {
     id: '<%= video.id %>',
+    index: '<%= continuation %>',
     plid: '<%= plid %>',
-    length_seconds: <%= video.info["length_seconds"].to_f %>,
+    length_seconds: <%= video.length_seconds.to_f %>,
     play_next: <%= !rvs.empty? && !plid && params.continue %>,
     next_video: '<%= rvs.select { |rv| rv["id"]? }[0]?.try &.["id"] %>',
     youtube_comments_text: '<%= HTML.escape(translate(locale, "View YouTube comments")) %>',
@@ -65,7 +66,7 @@ var video_data = {
 
     <% if !video.is_listed %>
         <h3>
-            <i class="icon ion-ios-lock"></i> <%= translate(locale, "Unlisted") %>
+            <i class="icon ion-ios-unlock"></i> <%= translate(locale, "Unlisted") %>
         </h3>
     <% end %>
 
@@ -83,9 +84,9 @@ var video_data = {
 <div class="pure-g">
     <div class="pure-u-1 pure-u-lg-1-5">
         <div class="h-box">
-            <p>
+            <span>
                 <a href="https://www.youtube.com/watch?v=<%= video.id %>"><%= translate(locale, "Watch on YouTube") %></a>
-            </p>
+            </span>
             <p>
                 <% if params.annotations %>
                     <a href="/watch?<%= env.params.query %>&iv_load_policy=3">
@@ -98,7 +99,7 @@ var video_data = {
                 <% end %>
             </p>
 
-            <% if CONFIG.dmca_content.includes? video.id %>
+            <% if CONFIG.dmca_content.includes?(video.id) || CONFIG.disabled?("downloads") %>
                 <p><%= translate(locale, "Download is disabled.") %></p>
             <% else %>
                 <form class="pure-form pure-form-stacked" action="/latest_version" method="get" rel="noopener" target="_blank">
@@ -106,22 +107,22 @@ var video_data = {
                         <label for="download_widget"><%= translate(locale, "Download as: ") %></label>
                         <select style="width:100%" name="download_widget" id="download_widget">
                             <% fmt_stream.each do |option| %>
-                                <option value='{"id":"<%= video.id %>","itag":"<%= option["itag"] %>","title":"<%= URI.escape(video.title) %>-<%= video.id %>.<%= option["type"].split(";")[0].split("/")[1] %>"}'>
+                                <option value='{"id":"<%= video.id %>","itag":"<%= option["itag"] %>","title":"<%= URI.encode_www_form(video.title) %>-<%= video.id %>.<%= option["type"].split(";")[0].split("/")[1] %>"}'>
                                     <%= itag_to_metadata?(option["itag"]).try &.["height"]? || "~240" %>p - <%= option["type"].split(";")[0] %>
                                 </option>
                             <% end %>
                             <% video_streams.each do |option| %>
-                                <option value='{"id":"<%= video.id %>","itag":"<%= option["itag"] %>","title":"<%= URI.escape(video.title) %>-<%= video.id %>.<%= option["type"].split(";")[0].split("/")[1] %>"}'>
+                                <option value='{"id":"<%= video.id %>","itag":"<%= option["itag"] %>","title":"<%= URI.encode_www_form(video.title) %>-<%= video.id %>.<%= option["type"].split(";")[0].split("/")[1] %>"}'>
                                     <%= option["quality_label"] %> - <%= option["type"].split(";")[0] %> @ <%= option["fps"] %>fps - video only
                                 </option>
                             <% end %>
                             <% audio_streams.each do |option| %>
-                                <option value='{"id":"<%= video.id %>","itag":"<%= option["itag"] %>","title":"<%= URI.escape(video.title) %>-<%= video.id %>.<%= option["type"].split(";")[0].split("/")[1] %>"}'>
+                                <option value='{"id":"<%= video.id %>","itag":"<%= option["itag"] %>","title":"<%= URI.encode_www_form(video.title) %>-<%= video.id %>.<%= option["type"].split(";")[0].split("/")[1] %>"}'>
                                     <%= option["type"].split(";")[0] %> @ <%= option["bitrate"] %>k - audio only
                                 </option>
                             <% end %>
                             <% captions.each do |caption| %>
-                                <option value='{"id":"<%= video.id %>","label":"<%= caption.name.simpleText %>","title":"<%= URI.escape(video.title) %>-<%= video.id %>.<%= caption.languageCode %>.vtt"}'>
+                                <option value='{"id":"<%= video.id %>","label":"<%= caption.name.simpleText %>","title":"<%= URI.encode_www_form(video.title) %>-<%= video.id %>.<%= caption.languageCode %>.vtt"}'>
                                     <%= translate(locale, "Subtitles - `x` (.vtt)", caption.name.simpleText) %>
                                 </option>
                             <% end %>
@@ -165,11 +166,12 @@ var video_data = {
 
     <div class="pure-u-1 <% if params.related_videos || plid %>pure-u-lg-3-5<% else %>pure-u-md-4-5<% end %>">
         <div class="h-box">
-            <p>
-                <a href="/channel/<%= video.ucid %>">
-                    <h3><%= video.author %></h3>
-                </a>
-            </p>
+            <a href="/channel/<%= video.ucid %>" style="display:block;width:fit-content;width:-moz-fit-content">
+                <div class="channel-profile">
+                    <img src="/ggpht<%= URI.parse(video.author_thumbnail).full_path %>">
+                    <span><%= video.author %></span>
+                </div>
+            </a>
 
             <% ucid = video.ucid %>
             <% author = video.author %>
@@ -234,7 +236,11 @@ var video_data = {
                                 <p style="width:100%"><%= rv["title"] %></p>
                                 <h5 class="pure-g">
                                     <div class="pure-u-14-24">
-                                        <b style="width:100%"><%= rv["author"] %></b>
+                                        <% if rv["ucid"]? %>
+                                            <b style="width:100%"><a href="/channel/<%= rv["ucid"] %>"><%= rv["author"] %></a></b>
+                                        <% else %>
+                                            <b style="width:100%"><%= rv["author"] %></b>
+                                        <% end %>
                                     </div>
 
                                     <div class="pure-u-10-24" style="text-align:right">

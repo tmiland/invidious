@@ -1,5 +1,23 @@
+html,
+body {
+  font-family: BlinkMacSystemFont, -apple-system, "Segoe UI", Roboto, Oxygen,
+    Ubuntu, Cantarell, "Fira Sans", "Droid Sans", "Helvetica Neue", Helvetica,
+    Arial, sans-serif;
+}
+
 .deleted {
   background-color: rgb(255, 0, 0, 0.5);
+}
+
+.channel-profile > * {
+  font-size: 1.17em;
+  font-weight: bold;
+  vertical-align: middle;
+}
+
+.channel-profile > img {
+  width: 48px;
+  height: auto;
 }
 
 .channel-owner {
@@ -92,6 +110,7 @@ img.thumbnail {
   height: 100%;
   left: 0;
   top: 0;
+  object-fit: cover;
 }
 
 .length {
@@ -102,7 +121,6 @@ img.thumbnail {
   border-radius: 2px;
   padding: 2px;
   font-size: 16px;
-  font-family: sans-serif;
   right: 0.25em;
   bottom: -0.75em;
 }
@@ -115,7 +133,6 @@ img.thumbnail {
   border-radius: 2px;
   padding: 4px 8px 4px 8px;
   font-size: 16px;
-  font-family: sans-serif;
   left: 0.2em;
   top: -0.7em;
 }
@@ -145,9 +162,12 @@ img.thumbnail {
 
 .navbar .index-link {
   font-weight: bold;
+  display: inline;
 }
 
 .navbar > .searchbar .pure-form input[type="search"] {
+  margin-bottom: 1px;
+
   border-top: 0;
   border-left: 0;
   border-right: 0;
@@ -158,7 +178,6 @@ img.thumbnail {
 
   box-shadow: none;
 
-  transition: 0.1s border-bottom;
   -webkit-appearance: none;
 }
 
@@ -177,6 +196,7 @@ input[type="search"]::-webkit-search-cancel-button {
 
 /* attract focus to the searchbar by adding a subtle transition */
 .navbar > .searchbar .pure-form input[type="search"]:focus {
+  margin-bottom: 0px;
   border-bottom: 2px solid #aaa;
 }
 
@@ -263,11 +283,25 @@ input[type="search"]::-webkit-search-cancel-button {
 }
 
 /* Control Bar */
-@media screen and (max-width: 480px) {
+@media screen and (max-width: 640px) {
   .video-js .vjs-control-bar,
   .vjs-menu-button-popup .vjs-menu .vjs-menu-content {
-    overflow: -webkit-paged-x;
+    overflow-x: scroll;
   }
+}
+
+ul.vjs-menu-content::-webkit-scrollbar {
+  display: none;
+}
+
+.vjs-user-inactive {
+  cursor: none;
+}
+
+.video-js .vjs-text-track-display > div > div > div {
+  background-color: rgba(0, 0, 0, 0.75) !important;
+  border-radius: 9px !important;
+  padding: 5px !important;
 }
 
 .vjs-play-control,
@@ -301,9 +335,18 @@ input[type="search"]::-webkit-search-cancel-button {
   order: 6;
 }
 
+.vjs-playback-rate > .vjs-menu {
+  width: 50px;
+}
+
 .vjs-control-bar {
   display: flex;
   flex-direction: row;
+  scrollbar-width: none;
+}
+
+.vjs-control-bar::-webkit-scrollbar {
+  display: none;
 }
 
 .video-js .vjs-icon-cog {
@@ -353,13 +396,14 @@ span > select {
 
 /* Overlay */
 .video-js .vjs-overlay {
-  background-color: rgba(35, 35, 35, 0.5);
+  background-color: rgba(35, 35, 35, 0.75);
   color: rgba(255, 255, 255, 1);
 }
 
 /* ProgressBar marker */
 .vjs-marker {
   background-color: rgba(255, 255, 255, 1);
+  z-index: 0;
 }
 
 /* Big "Play" Button */
@@ -405,4 +449,23 @@ video.video-js {
 
 .pure-control-group label {
   word-wrap: normal;
+}
+
+.video-js.player-style-invidious {
+  /* This is already the default */
+}
+
+.video-js.player-style-youtube .vjs-control-bar {
+  display: flex;
+  flex-direction: row;
+}
+.video-js.player-style-youtube .vjs-big-play-button {
+  /*
+    Styles copied from video-js.min.css, definition of
+    .vjs-big-play-centered .vjs-big-play-button
+  */
+  top: 50%;
+  left: 50%;
+  margin-top: -0.81666em;
+  margin-left: -1.5em;
 }

@@ -4,7 +4,7 @@ def Object.from_json(string_or_io, default) : self
   new parser, default
 end
 
-# Adds configurable 'default' to
+# Adds configurable 'default'
 macro patched_json_mapping(_properties_, strict = false)
   {% for key, value in _properties_ %}
     {% _properties_[key] = {type: value} unless value.is_a?(HashLiteral) || value.is_a?(NamedTupleLiteral) %}
@@ -50,7 +50,7 @@ macro patched_json_mapping(_properties_, strict = false)
     rescue exc : ::JSON::ParseException
       raise ::JSON::MappingError.new(exc.message, self.class.to_s, nil, *%location, exc)
     end
-    while %pull.kind != :end_object
+    until %pull.kind.end_object?
       %key_location = %pull.location
       key = %pull.read_object_key
       case key

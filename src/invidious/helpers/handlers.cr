@@ -21,7 +21,7 @@ end
 
 class Kemal::RouteHandler
   {% for method in %w(GET POST PUT HEAD DELETE PATCH OPTIONS) %}
-  exclude ["/api/v1/*"], {{method}}
+    exclude ["/api/v1/*"], {{method}}
   {% end %}
 
   # Processes the route if it's a match. Otherwise renders 404.
@@ -33,8 +33,7 @@ class Kemal::RouteHandler
       raise Kemal::Exceptions::CustomException.new(context)
     end
 
-    if context.request.method == "HEAD" &&
-       context.request.path.ends_with? ".jpg"
+    if context.request.method == "HEAD" && context.request.path.ends_with? ".jpg"
       context.response.headers["Content-Type"] = "image/jpeg"
     end
 
@@ -45,7 +44,7 @@ end
 
 class Kemal::ExceptionHandler
   {% for method in %w(GET POST PUT HEAD DELETE PATCH OPTIONS) %}
-  exclude ["/api/v1/*"], {{method}}
+    exclude ["/api/v1/*"], {{method}}
   {% end %}
 
   private def call_exception_with_status_code(context : HTTP::Server::Context, exception : Exception, status_code : Int32)
@@ -69,20 +68,20 @@ class FilteredCompressHandler < Kemal::Handler
     return call_next env if exclude_match? env
 
     {% if flag?(:without_zlib) %}
-        call_next env
-      {% else %}
-        request_headers = env.request.headers
+      call_next env
+    {% else %}
+      request_headers = env.request.headers
 
-        if request_headers.includes_word?("Accept-Encoding", "gzip")
-          env.response.headers["Content-Encoding"] = "gzip"
-          env.response.output = Gzip::Writer.new(env.response.output, sync_close: true)
-        elsif request_headers.includes_word?("Accept-Encoding", "deflate")
-          env.response.headers["Content-Encoding"] = "deflate"
-          env.response.output = Flate::Writer.new(env.response.output, sync_close: true)
-        end
+      if request_headers.includes_word?("Accept-Encoding", "gzip")
+        env.response.headers["Content-Encoding"] = "gzip"
+        env.response.output = Gzip::Writer.new(env.response.output, sync_close: true)
+      elsif request_headers.includes_word?("Accept-Encoding", "deflate")
+        env.response.headers["Content-Encoding"] = "deflate"
+        env.response.output = Flate::Writer.new(env.response.output, sync_close: true)
+      end
 
-        call_next env
-      {% end %}
+      call_next env
+    {% end %}
   end
 end
 
@@ -96,8 +95,8 @@ class AuthHandler < Kemal::Handler
 
     begin
       if token = env.request.headers["Authorization"]?
-        token = JSON.parse(URI.unescape(token.lchop("Bearer ")))
-        session = URI.unescape(token["session"].as_s)
+        token = JSON.parse(URI.decode_www_form(token.lchop("Bearer ")))
+        session = URI.decode_www_form(token["session"].as_s)
         scopes, expire, signature = validate_request(token, session, env.request, HMAC_KEY, PG_DB, nil)
 
         if email = PG_DB.query_one?("SELECT email FROM session_ids WHERE id = $1", session, as: String)
@@ -130,7 +129,7 @@ class AuthHandler < Kemal::Handler
 
       error_message = {"error" => ex.message}.to_json
       env.response.status_code = 403
-      env.response.puts error_message
+      env.response.print error_message
     end
   end
 end
@@ -159,10 +158,10 @@ class APIHandler < Kemal::Handler
       call_next env
 
       env.response.output.rewind
-      response = env.response.output.gets_to_end
 
-      if env.response.headers["Content-Type"]?.try &.== "application/json"
-        response = JSON.parse(response)
+      if env.response.output.as(IO::Memory).size != 0 &&
+         env.response.headers.includes_word?("Content-Type", "application/json")
+        response = JSON.parse(env.response.output)
 
         if fields_text = env.params.query["fields"]?
           begin
@@ -173,16 +172,30 @@ class APIHandler < Kemal::Handler
           end
         end
 
-        if env.params.query["pretty"]? && env.params.query["pretty"] == "1"
+        if env.params.query["pretty"]?.try &.== "1"
+          response = response.to_pretty_json
+        else
+          response = response.to_json
+        end
+      else
+        response = env.response.output.gets_to_end
+      end
+    rescue ex
+      env.response.content_type = "application/json" if env.response.headers.includes_word?("Content-Type", "text/html")
+      env.response.status_code = 500
+
+      if env.response.headers.includes_word?("Content-Type", "application/json")
+        response = {"error" => ex.message || "Unspecified error"}
+
+        if env.params.query["pretty"]?.try &.== "1"
           response = response.to_pretty_json
         else
           response = response.to_json
         end
       end
-    rescue ex
     ensure
       env.response.output = output
-      env.response.puts response
+      env.response.print response
 
       env.response.flush
     end

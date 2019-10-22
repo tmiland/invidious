@@ -1,5 +1,8 @@
 require "crypto/bcrypt/password"
 
+# Materialized views may not be defined using bound parameters (`$1` as used elsewhere)
+MATERIALIZED_VIEW_SQL = ->(email : String) { "SELECT cv.* FROM channel_videos cv WHERE EXISTS (SELECT subscriptions FROM users u WHERE cv.ucid = ANY (u.subscriptions) AND u.email = E'#{email.gsub({'\'' => "\\'", '\\' => "\\\\"})}') ORDER BY published DESC" }
+
 struct User
   module PreferencesConverter
     def self.from_rs(rs)
@@ -28,62 +31,6 @@ struct User
 end
 
 struct Preferences
-  module StringToArray
-    def self.to_json(value : Array(String), json : JSON::Builder)
-      json.array do
-        value.each do |element|
-          json.string element
-        end
-      end
-    end
-
-    def self.from_json(value : JSON::PullParser) : Array(String)
-      begin
-        result = [] of String
-        value.read_array do
-          result << HTML.escape(value.read_string[0, 100])
-        end
-      rescue ex
-        result = [HTML.escape(value.read_string[0, 100]), ""]
-      end
-
-      result
-    end
-
-    def self.to_yaml(value : Array(String), yaml : YAML::Nodes::Builder)
-      yaml.sequence do
-        value.each do |element|
-          yaml.scalar element
-        end
-      end
-    end
-
-    def self.from_yaml(ctx : YAML::ParseContext, node : YAML::Nodes::Node) : Array(String)
-      begin
-        unless node.is_a?(YAML::Nodes::Sequence)
-          node.raise "Expected sequence, not #{node.class}"
-        end
-
-        result = [] of String
-        node.nodes.each do |item|
-          unless item.is_a?(YAML::Nodes::Scalar)
-            node.raise "Expected scalar, not #{item.class}"
-          end
-
-          result << HTML.escape(item.value[0, 100])
-        end
-      rescue ex
-        if node.is_a?(YAML::Nodes::Scalar)
-          result = [HTML.escape(node.value[0, 100]), ""]
-        else
-          result = ["", ""]
-        end
-      end
-
-      result
-    end
-  end
-
   module ProcessString
     def self.to_json(value : String, json : JSON::Builder)
       json.string value
@@ -124,19 +71,21 @@ struct Preferences
     annotations:            {type: Bool, default: CONFIG.default_user_preferences.annotations},
     annotations_subscribed: {type: Bool, default: CONFIG.default_user_preferences.annotations_subscribed},
     autoplay:               {type: Bool, default: CONFIG.default_user_preferences.autoplay},
-    captions:               {type: Array(String), default: CONFIG.default_user_preferences.captions, converter: StringToArray},
-    comments:               {type: Array(String), default: CONFIG.default_user_preferences.comments, converter: StringToArray},
+    captions:               {type: Array(String), default: CONFIG.default_user_preferences.captions, converter: ConfigPreferences::StringToArray},
+    comments:               {type: Array(String), default: CONFIG.default_user_preferences.comments, converter: ConfigPreferences::StringToArray},
     continue:               {type: Bool, default: CONFIG.default_user_preferences.continue},
     continue_autoplay:      {type: Bool, default: CONFIG.default_user_preferences.continue_autoplay},
-    dark_mode:              {type: Bool, default: CONFIG.default_user_preferences.dark_mode},
+    dark_mode:              {type: String, default: CONFIG.default_user_preferences.dark_mode, converter: ConfigPreferences::BoolToString},
     latest_only:            {type: Bool, default: CONFIG.default_user_preferences.latest_only},
     listen:                 {type: Bool, default: CONFIG.default_user_preferences.listen},
     local:                  {type: Bool, default: CONFIG.default_user_preferences.local},
     locale:                 {type: String, default: CONFIG.default_user_preferences.locale, converter: ProcessString},
     max_results:            {type: Int32, default: CONFIG.default_user_preferences.max_results, converter: ClampInt},
     notifications_only:     {type: Bool, default: CONFIG.default_user_preferences.notifications_only},
+    player_style:           {type: String, default: CONFIG.default_user_preferences.player_style, converter: ProcessString},
     quality:                {type: String, default: CONFIG.default_user_preferences.quality, converter: ProcessString},
-    redirect_feed:          {type: Bool, default: CONFIG.default_user_preferences.redirect_feed},
+    default_home:           {type: String, default: CONFIG.default_user_preferences.default_home},
+    feed_menu:              {type: Array(String), default: CONFIG.default_user_preferences.feed_menu},
     related_videos:         {type: Bool, default: CONFIG.default_user_preferences.related_videos},
     sort:                   {type: String, default: CONFIG.default_user_preferences.sort, converter: ProcessString},
     speed:                  {type: Float32, default: CONFIG.default_user_preferences.speed},
@@ -159,17 +108,14 @@ def get_user(sid, headers, db, refresh = true)
       args = arg_array(user_array)
 
       db.exec("INSERT INTO users VALUES (#{args}) \
-      ON CONFLICT (email) DO UPDATE SET updated = $1, subscriptions = $3", user_array)
+      ON CONFLICT (email) DO UPDATE SET updated = $1, subscriptions = $3", args: user_array)
 
       db.exec("INSERT INTO session_ids VALUES ($1,$2,$3) \
       ON CONFLICT (id) DO NOTHING", sid, user.email, Time.utc)
 
       begin
         view_name = "subscriptions_#{sha256(user.email)}"
-        db.exec("CREATE MATERIALIZED VIEW #{view_name} AS \
-          SELECT * FROM channel_videos WHERE
-          ucid IN (SELECT unnest(subscriptions) FROM users WHERE email = E'#{user.email.gsub("'", "\\'")}')
-          ORDER BY published DESC")
+        db.exec("CREATE MATERIALIZED VIEW #{view_name} AS #{MATERIALIZED_VIEW_SQL.call(user.email)}")
       rescue ex
       end
     end
@@ -181,17 +127,14 @@ def get_user(sid, headers, db, refresh = true)
     args = arg_array(user.to_a)
 
     db.exec("INSERT INTO users VALUES (#{args}) \
-    ON CONFLICT (email) DO UPDATE SET updated = $1, subscriptions = $3", user_array)
+    ON CONFLICT (email) DO UPDATE SET updated = $1, subscriptions = $3", args: user_array)
 
     db.exec("INSERT INTO session_ids VALUES ($1,$2,$3) \
     ON CONFLICT (id) DO NOTHING", sid, user.email, Time.utc)
 
     begin
       view_name = "subscriptions_#{sha256(user.email)}"
-      db.exec("CREATE MATERIALIZED VIEW #{view_name} AS \
-        SELECT * FROM channel_videos WHERE
-        ucid IN (SELECT unnest(subscriptions) FROM users WHERE email = E'#{user.email.gsub("'", "\\'")}')
-        ORDER BY published DESC")
+      db.exec("CREATE MATERIALIZED VIEW #{view_name} AS #{MATERIALIZED_VIEW_SQL.call(user.email)}")
     rescue ex
     end
   end
@@ -340,6 +283,49 @@ def subscribe_ajax(channel_id, action, env_headers)
   end
 end
 
+# TODO: Playlist stub, sync with YouTube for Google accounts
+# def playlist_ajax(video_ids, source_playlist_id, name, privacy, action, env_headers)
+#   headers = HTTP::Headers.new
+#   headers["Cookie"] = env_headers["Cookie"]
+#
+#   client = make_client(YT_URL)
+#   html = client.get("/view_all_playlists?disable_polymer=1", headers)
+#
+#   cookies = HTTP::Cookies.from_headers(headers)
+#   html.cookies.each do |cookie|
+#     if {"VISITOR_INFO1_LIVE", "YSC", "SIDCC"}.includes? cookie.name
+#       if cookies[cookie.name]?
+#         cookies[cookie.name] = cookie
+#       else
+#         cookies << cookie
+#       end
+#     end
+#   end
+#   headers = cookies.add_request_headers(headers)
+#
+#   if match = html.body.match(/'XSRF_TOKEN': "(?<session_token>[A-Za-z0-9\_\-\=]+)"/)
+#     session_token = match["session_token"]
+#
+#     headers["content-type"] = "application/x-www-form-urlencoded"
+#
+#     post_req = {
+#       video_ids:          [] of String,
+#       source_playlist_id: "",
+#       n:                  name,
+#       p:                  privacy,
+#       session_token:      session_token,
+#     }
+#     post_url = "/playlist_ajax?#{action}=1"
+#
+#     response = client.post(post_url, headers, form: post_req)
+#     if response.status_code == 200
+#       return JSON.parse(response.body)["result"]["playlistId"].as_s
+#     else
+#       return nil
+#     end
+#   end
+# end
+
 def get_subscription_feed(db, user, max_results = 40, page = 1)
   limit = max_results.clamp(0, MAX_ITEMS_PER_PAGE)
   offset = (page - 1) * limit
@@ -353,8 +339,7 @@ def get_subscription_feed(db, user, max_results = 40, page = 1)
 
     args = arg_array(notifications)
 
-    notifications = db.query_all("SELECT * FROM channel_videos WHERE id IN (#{args})
-    ORDER BY published DESC", notifications, as: ChannelVideo)
+    notifications = db.query_all("SELECT * FROM channel_videos WHERE id IN (#{args}) ORDER BY published DESC", args: notifications, as: ChannelVideo)
     videos = [] of ChannelVideo
 
     notifications.sort_by! { |video| video.published }.reverse!
@@ -380,14 +365,11 @@ def get_subscription_feed(db, user, max_results = 40, page = 1)
         else
           values = "VALUES #{user.watched.map { |id| %(('#{id}')) }.join(",")}"
         end
-        videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM #{view_name} WHERE \
-        NOT id = ANY (#{values}) \
-        ORDER BY ucid, published DESC", as: ChannelVideo)
+        videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM #{view_name} WHERE NOT id = ANY (#{values}) ORDER BY ucid, published DESC", as: ChannelVideo)
       else
         # Show latest video from each channel
 
-        videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM #{view_name} \
-        ORDER BY ucid, published DESC", as: ChannelVideo)
+        videos = PG_DB.query_all("SELECT DISTINCT ON (ucid) * FROM #{view_name} ORDER BY ucid, published DESC", as: ChannelVideo)
       end
 
       videos.sort_by! { |video| video.published }.reverse!
@@ -400,14 +382,11 @@ def get_subscription_feed(db, user, max_results = 40, page = 1)
         else
           values = "VALUES #{user.watched.map { |id| %(('#{id}')) }.join(",")}"
         end
-        videos = PG_DB.query_all("SELECT * FROM #{view_name} WHERE \
-        NOT id = ANY (#{values}) \
-        ORDER BY published DESC LIMIT $1 OFFSET $2", limit, offset, as: ChannelVideo)
+        videos = PG_DB.query_all("SELECT * FROM #{view_name} WHERE NOT id = ANY (#{values}) ORDER BY published DESC LIMIT $1 OFFSET $2", limit, offset, as: ChannelVideo)
       else
         # Sort subscriptions as normal
 
-        videos = PG_DB.query_all("SELECT * FROM #{view_name} \
-        ORDER BY published DESC LIMIT $1 OFFSET $2", limit, offset, as: ChannelVideo)
+        videos = PG_DB.query_all("SELECT * FROM #{view_name} ORDER BY published DESC LIMIT $1 OFFSET $2", limit, offset, as: ChannelVideo)
       end
     end
 
@@ -424,15 +403,10 @@ def get_subscription_feed(db, user, max_results = 40, page = 1)
       videos.sort_by! { |video| video.author }.reverse!
     end
 
-    notifications = PG_DB.query_one("SELECT notifications FROM users WHERE email = $1", user.email,
-      as: Array(String))
+    notifications = PG_DB.query_one("SELECT notifications FROM users WHERE email = $1", user.email, as: Array(String))
 
     notifications = videos.select { |v| notifications.includes? v.id }
     videos = videos - notifications
-  end
-
-  if !limit
-    videos = videos[0..max_results]
   end
 
   return videos, notifications

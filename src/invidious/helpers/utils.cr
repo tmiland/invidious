@@ -18,24 +18,14 @@ def elapsed_text(elapsed)
   "#{(millis * 1000).round(2)}µs"
 end
 
-def make_client(url : URI, proxies = {} of String => Array({ip: String, port: Int32}), region = nil)
-  context = nil
-
-  if url.scheme == "https"
-    context = OpenSSL::SSL::Context::Client.new
-    context.add_options(
-      OpenSSL::SSL::Options::ALL |
-      OpenSSL::SSL::Options::NO_SSL_V2 |
-      OpenSSL::SSL::Options::NO_SSL_V3
-    )
-  end
-
-  client = HTTPClient.new(url, context)
-  client.read_timeout = 10.seconds
-  client.connect_timeout = 10.seconds
+def make_client(url : URI, region = nil)
+  client = HTTPClient.new(url)
+  client.family = (url.host == "www.youtube.com") ? CONFIG.force_resolve : Socket::Family::UNSPEC
+  client.read_timeout = 15.seconds
+  client.connect_timeout = 15.seconds
 
   if region
-    proxies[region]?.try &.sample(40).each do |proxy|
+    PROXY_LIST[region]?.try &.sample(40).each do |proxy|
       begin
         proxy = HTTPProxy.new(proxy_host: proxy[:ip], proxy_port: proxy[:port])
         client.set_proxy(proxy)
@@ -167,7 +157,7 @@ def number_with_separator(number)
   number.to_s.reverse.gsub(/(\d{3})(?=\d)/, "\\1,").reverse
 end
 
-def short_text_to_number(short_text)
+def short_text_to_number(short_text : String) : Int32
   case short_text
   when .ends_with? "M"
     number = short_text.rstrip(" mM").to_f
@@ -256,7 +246,7 @@ def get_referer(env, fallback = "/", unroll = true)
       if referer.query
         params = HTTP::Params.parse(referer.query.not_nil!)
         if params["referer"]?
-          referer = URI.parse(URI.unescape(params["referer"]))
+          referer = URI.parse(URI.decode_www_form(params["referer"]))
         else
           break
         end
@@ -276,50 +266,41 @@ def get_referer(env, fallback = "/", unroll = true)
   return referer
 end
 
-def read_var_int(bytes)
-  num_read = 0
-  result = 0
+struct VarInt
+  def self.from_io(io : IO, format = IO::ByteFormat::NetworkEndian) : Int32
+    result = 0_u32
+    num_read = 0
 
-  read = bytes[num_read]
+    loop do
+      byte = io.read_byte
+      raise "Invalid VarInt" if !byte
+      value = byte & 0x7f
 
-  if bytes.size == 1
-    result = bytes[0].to_i32
-  else
-    while ((read & 0b10000000) != 0)
-      read = bytes[num_read].to_u64
-      value = (read & 0b01111111)
-      result |= (value << (7 * num_read))
-
+      result |= value.to_u32 << (7 * num_read)
       num_read += 1
-      if num_read > 5
-        raise "VarInt is too big"
-      end
+
+      break if byte & 0x80 == 0
+      raise "Invalid VarInt" if num_read > 5
     end
+
+    result.to_i32
   end
 
-  return result
-end
+  def self.to_io(io : IO, value : Int32)
+    io.write_byte 0x00 if value == 0x00
+    value = value.to_u32
 
-def write_var_int(value : Int)
-  bytes = [] of UInt8
-  value = value.to_u32
-
-  if value == 0
-    bytes = [0_u8]
-  else
     while value != 0
-      temp = (value & 0b01111111).to_u8
-      value = value >> 7
+      byte = (value & 0x7f).to_u8
+      value >>= 7
 
       if value != 0
-        temp |= 0b10000000
+        byte |= 0x80
       end
 
-      bytes << temp
+      io.write_byte byte
     end
   end
-
-  return Slice.new(bytes.to_unsafe, bytes.size)
 end
 
 def sha256(text)
@@ -357,4 +338,35 @@ def subscribe_pubsub(topic, key, config)
   }
 
   return client.post("/subscribe", form: body)
+end
+
+def parse_range(range)
+  if !range
+    return 0_i64, nil
+  end
+
+  ranges = range.lchop("bytes=").split(',')
+  ranges.each do |range|
+    start_range, end_range = range.split('-')
+
+    start_range = start_range.to_i64? || 0_i64
+    end_range = end_range.to_i64?
+
+    return start_range, end_range
+  end
+
+  return 0_i64, nil
+end
+
+def convert_theme(theme)
+  case theme
+  when "true"
+    "dark"
+  when "false"
+    "light"
+  when "", nil
+    nil
+  else
+    theme
+  end
 end

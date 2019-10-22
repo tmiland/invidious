@@ -7,13 +7,15 @@ services:
     restart: unless-stopped
     volumes:
       - postgresdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"] 
   invidious:
     build:
       context: .
       dockerfile: docker/Dockerfile
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       - postgres
 

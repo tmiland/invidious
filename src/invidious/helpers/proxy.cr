@@ -31,10 +31,10 @@ class HTTPProxy
 
     if resp[:code]? == 200
       {% if !flag?(:without_openssl) %}
-          if tls
-            tls_socket = OpenSSL::SSL::Socket::Client.new(socket, context: tls, sync_close: true, hostname: host)
-            socket = tls_socket
-          end
+        if tls
+          tls_socket = OpenSSL::SSL::Socket::Client.new(socket, context: tls, sync_close: true, hostname: host)
+          socket = tls_socket
+        end
       {% end %}
 
       return socket
@@ -85,6 +85,16 @@ class HTTPClient < HTTP::Client
     opts[:read_timeout] = @read_timeout
 
     return opts
+  end
+
+  def exec(request)
+    if self.host == "www.youtube.com"
+      request.headers["x-youtube-client-name"] ||= "1"
+      request.headers["x-youtube-client-version"] ||= "1.20180719"
+      request.headers["user-agent"] ||= "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/77.0.3865.90 Safari/537.36"
+    end
+
+    super
   end
 end
 

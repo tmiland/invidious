@@ -1,15 +1,16 @@
 var notifications, delivered;
 
-function get_subscriptions(callback, timeouts = 1) {
-    if (timeouts >= 10) {
-        return
+function get_subscriptions(callback, retries) {
+    if (retries == undefined) retries = 5;
+
+    if (retries <= 0) {
+        return;
     }
 
     var xhr = new XMLHttpRequest();
     xhr.responseType = 'json';
-    xhr.timeout = 20000;
-    xhr.open('GET', '/api/v1/auth/subscriptions', true);
-    xhr.send(null);
+    xhr.timeout = 10000;
+    xhr.open('GET', '/api/v1/auth/subscriptions?fields=authorId', true);
 
     xhr.onreadystatechange = function () {
         if (xhr.readyState === 4) {
@@ -20,10 +21,17 @@ function get_subscriptions(callback, timeouts = 1) {
         }
     }
 
-    xhr.ontimeout = function () {
-        console.log('Pulling subscriptions timed out... ' + timeouts + '/10');
-        get_subscriptions(callback, timeouts++);
+    xhr.onerror = function () {
+        console.log('Pulling subscriptions failed... ' + retries + '/5');
+        setTimeout(function () { get_subscriptions(callback, retries - 1) }, 1000);
     }
+
+    xhr.ontimeout = function () {
+        console.log('Pulling subscriptions failed... ' + retries + '/5');
+        get_subscriptions(callback, retries - 1);
+    }
+
+    xhr.send();
 }
 
 function create_notification_stream(subscriptions) {
@@ -39,7 +47,7 @@ function create_notification_stream(subscriptions) {
 
     notifications.onmessage = function (event) {
         if (!event.id) {
-            return
+            return;
         }
 
         var notification = JSON.parse(event.data);
@@ -74,19 +82,14 @@ function create_notification_stream(subscriptions) {
         }
     }
 
-    notifications.onerror = function (event) {
-        console.log('Something went wrong with notifications, trying to reconnect...');
-        notifications.close();
-        get_subscriptions(create_notification_stream);
-    }
-
-    notifications.ontimeout = function (event) {
-        console.log('Something went wrong with notifications, trying to reconnect...');
-        notifications.close();
-        get_subscriptions(create_notification_stream);
-    }
-
+    notifications.addEventListener('error', handle_notification_error);
     notifications.stream();
+}
+
+function handle_notification_error(event) {
+    console.log('Something went wrong with notifications, trying to reconnect...');
+    notifications = { close: function () { } };
+    setTimeout(function () { get_subscriptions(create_notification_stream) }, 1000);
 }
 
 window.addEventListener('load', function (e) {
@@ -97,10 +100,11 @@ window.addEventListener('load', function (e) {
     } else {
         setTimeout(function () {
             if (!localStorage.getItem('stream')) {
-                get_subscriptions(create_notification_stream);
+                notifications = { close: function () { } };
                 localStorage.setItem('stream', true);
+                get_subscriptions(create_notification_stream);
             }
-        }, Math.random() * 1000 + 10);
+        }, Math.random() * 1000 + 50);
     }
 
     window.addEventListener('storage', function (e) {
@@ -110,10 +114,11 @@ window.addEventListener('load', function (e) {
             } else {
                 setTimeout(function () {
                     if (!localStorage.getItem('stream')) {
-                        get_subscriptions(create_notification_stream);
+                        notifications = { close: function () { } };
                         localStorage.setItem('stream', true);
+                        get_subscriptions(create_notification_stream);
                     }
-                }, Math.random() * 1000 + 10);
+                }, Math.random() * 1000 + 50);
             }
         } else if (e.key === 'notification_count') {
             var notification_ticker = document.getElementById('notification_ticker');
